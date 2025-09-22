@@ -1,0 +1,39 @@
+﻿# Node
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.*
+web/.env
+web/.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Web builds
+web/.next/
+web/nuxt/
+web/.svelte-kit/
+web/dist/
+web/build/
+web/out/
+web/.cache/
+web/coverage/
+web/.vercel/
+web/.turbo/
+web/.vite/
+
+# Locks (only keep package.json, ignore lockfiles)
+web/package-lock.json
+web/yarn.lock
+web/pnpm-lock.yaml

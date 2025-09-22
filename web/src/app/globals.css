@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FFFFFF;
+  --foreground: #0a0a0a;
+}
+
+.dark {
+  --background: #000000;
+  --foreground: #f9fafb;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer components {
+  .badge-ceo {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+
+  /* Use brand.primary tokens so Tailwind can generate classes */
+  .badge-ceo-light {
+    @apply text-brand-primary bg-brand-primary/10 border border-brand-primary/20;
+  }
+
+  .badge-ceo-dark {
+    @apply text-brand-darkBlue bg-brand-darkBlue/15 border border-brand-darkBlue/30;
+  }
+
+  /* Container utility */
+  .container-app {
+    @apply mx-auto w-full max-w-6xl px-4;
+  }
+
+  /* Card */
+  .card {
+    @apply rounded-2xl border bg-white/90 p-6 shadow-sm backdrop-blur dark:border-white/10 dark:bg-[#0b0b0b]/70;
+  }
+
+  /* Section headings */
+  .section-title {
+    @apply mb-3 text-lg font-semibold text-brand-darkPurple dark:text-brand-light;
+  }
+}
+
+@layer utilities {
+  @keyframes floaty {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-4px); }
+    100% { transform: translateY(0px); }
+  }
+
+  .animate-float {
+    animation: floaty 6s ease-in-out infinite;
+  }
+
+  .tilt-card {
+    @apply transition will-change-transform;
+  }
+  .tilt-card:hover {
+    transform: translateY(-3px) scale(1.01);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+  }
+  .dark .tilt-card:hover {
+    box-shadow: 0 10px 30px rgba(255,255,255,0.06);
+  }
+
+  /* Brand gradient + glow utilities */
+  .brand-gradient {
+    background: linear-gradient(135deg, #8A6FE6 0%, #4D6BF1 100%);
+  }
+  .brand-glow {
+    box-shadow:
+      0 10px 30px rgba(77,107,241,0.25),
+      0 6px 18px rgba(138,111,230,0.18);
+  }
+  .dark .brand-glow {
+    box-shadow:
+      0 10px 30px rgba(0,0,139,0.35),
+      0 6px 18px rgba(75,0,130,0.25);
+  }
+
+  /* Quote slide animations */
+  @keyframes quoteIn {
+    0% { opacity: 0; transform: translateX(12px); }
+    100% { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes quoteOut {
+    0% { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(-12px); }
+  }
+  .quote-enter { animation: quoteIn 0.28s ease-out both; }
+  .quote-exit { animation: quoteOut 0.28s ease-in both; }
+}
