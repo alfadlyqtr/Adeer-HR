@@ -13,27 +13,24 @@ Thumbs.db
 # Env files
 .env
 .env.*
-web/.env
-web/.env.*
+!.env.example   # allow an example env if you want to share defaults
 
 # IDE
 .vscode/
 .idea/
 
-# Web builds
-web/.next/
-web/nuxt/
-web/.svelte-kit/
-web/dist/
-web/build/
-web/out/
-web/.cache/
-web/coverage/
-web/.vercel/
-web/.turbo/
-web/.vite/
+# Builds
+.next/
+out/
+dist/
+build/
+.cache/
+coverage/
+.vercel/
+.turbo/
+.vite/
 
 # Locks (only keep package.json, ignore lockfiles)
-web/package-lock.json
-web/yarn.lock
-web/pnpm-lock.yaml
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
