@@ -7,6 +7,10 @@ import { useUserRole } from "@/hooks/useUserRole";
 
 export default function HRDashboard() {
   const { role } = useUserRole();
+  const [goldMode, setGoldMode] = useState(false);
+  const [tab, setTab] = useState<"overview" | "approvals" | "staff" | "settings" | "teams" | "folders" | "reports" | "warnings" | "ceo">("overview");
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [punchLoading, setPunchLoading] = useState(false);
   const [inout, setInout] = useState<any[]>([]);
   const [leaveReqs, setLeaveReqs] = useState<any[]>([]);
   const [corrReqs, setCorrReqs] = useState<any[]>([]);
@@ -17,42 +21,124 @@ export default function HRDashboard() {
   const [fileMeta, setFileMeta] = useState<{ user_id: string; category: string; expiry_date?: string }>({ user_id: "", category: "" });
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Teams & Warnings
+  const [teams, setTeams] = useState<any[]>([]);
+  const [teamName, setTeamName] = useState("");
+  const [memberUserId, setMemberUserId] = useState("");
+  const [memberTeamId, setMemberTeamId] = useState("");
+  const [managerUserId, setManagerUserId] = useState("");
+  const [managerTeamId, setManagerTeamId] = useState("");
+  const [warnings, setWarnings] = useState<any[]>([]);
+  // HR Settings data
+  const [jobTitles, setJobTitles] = useState<any[]>([]);
+  const [newJobTitle, setNewJobTitle] = useState("");
+  const [shifts, setShifts] = useState<any[]>([]);
+  const [newShift, setNewShift] = useState<{ name: string; duration_minutes: number; start_time?: string; end_time?: string }>({ name: "", duration_minutes: 480 });
+  const [holidays, setHolidays] = useState<any[]>([]);
+  const [newHoliday, setNewHoliday] = useState<{ day: string; name?: string }>({ day: "", name: "" });
+  const [breakRules, setBreakRules] = useState<any[]>([]);
+  const [newBreakRule, setNewBreakRule] = useState<{ name: string; minutes: number }>({ name: "", minutes: 60 });
+  const [nowMs, setNowMs] = useState<number>(Date.now());
 
   useEffect(() => {
     (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setSessionUserId(session?.user?.id ?? null);
       await Promise.all([
         refreshOverview(),
         refreshApprovals(),
         refreshUsers(),
         loadBranding(),
+        loadTeams(),
+        loadWarnings(),
+        loadSettingsData(),
       ]);
     })();
   }, []);
 
+  // Tick every second for live timers in status list
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  function fmtDuration(ms: number) {
+    if (ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    const hh = Math.floor(s / 3600).toString().padStart(2, "0");
+    const mm = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
+    const ss = Math.floor(s % 60).toString().padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  }
+
   async function refreshOverview() {
-    // v_current_status for everyone
-    const { data, error } = await supabase.from("v_current_status").select("*").order("user_name", { ascending: true });
+    // v_current_status for everyone (fallback to ordering by user_id to avoid missing column errors)
+    const { data, error } = await supabase
+      .from("v_current_status")
+      .select("*")
+      .order("user_id", { ascending: true });
     if (!error) setInout(data ?? []);
   }
 
+  // --- Punch In/Out for HR/CEO themselves ---
+  type LogType = "check_in" | "check_out";
+  async function logAttendance(type: LogType) {
+    if (!sessionUserId) return;
+    try {
+      setErr(null);
+      setPunchLoading(true);
+      const { error } = await supabase.from("attendance_logs").insert({
+        user_id: sessionUserId,
+        type,
+        ts: new Date().toISOString(),
+      });
+      if (error) throw error;
+      await refreshOverview();
+      setOkMsg(type === "check_in" ? "Checked in." : "Checked out.");
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to punch");
+    } finally {
+      setPunchLoading(false);
+    }
+  }
+
   async function refreshApprovals() {
-    const [{ data: leaves }, { data: corr }] = await Promise.all([
-      supabase.from("leave_requests").select("id,user_id,type,start_date,end_date,status").eq("status", "pending").order("start_date", { ascending: true }),
-      supabase.from("correction_requests").select("id,user_id,requested_at,reason,status").eq("status", "pending").order("requested_at", { ascending: true }),
+    const [{ data: leaves }, { data: corr, error: corrErr }] = await Promise.all([
+      supabase
+        .from("leave_requests")
+        .select("id,user_id,type,start_date,end_date,status")
+        .eq("status", "pending")
+        .order("start_date", { ascending: true }),
+      supabase
+        .from("correction_requests")
+        .select("id,user_id,reason:note,status,requested_at:created_at,target_date,requested_change,reviewer_id")
+        .eq("status", "pending"),
     ]);
     setLeaveReqs(leaves ?? []);
     setCorrReqs(corr ?? []);
+    if (corrErr) {
+      console.error("[HR] correction_requests load error:", corrErr);
+    }
   }
 
   async function refreshUsers() {
-    const { data } = await supabase.from("users").select("id,email,full_name,role,team_id,job_title").order("full_name", { ascending: true });
+    // Minimal projection to avoid missing columns
+    const { data } = await supabase
+      .from("users")
+      .select("id,email,role,full_name,job_title_id,shift_id")
+      .order("email", { ascending: true });
     setUsers(data ?? []);
   }
 
   async function loadBranding() {
-    const { data } = await supabase.from("company_settings").select("key,value");
+    // Be defensive: select all and try to derive key/value pairs regardless of column names
+    const { data } = await supabase.from("company_settings").select("*");
     const map: any = {};
-    (data ?? []).forEach((r: any) => { map[r.key] = r.value; });
+    (data ?? []).forEach((r: any) => {
+      const k = r.key ?? r.setting_key ?? r.name ?? null;
+      const v = r.value ?? r.setting_value ?? r.val ?? null;
+      if (k) map[k] = v;
+    });
     setBrand({ color: map["brand_color"], logo_url: map["brand_logo_url"] });
   }
 
@@ -60,12 +146,6 @@ export default function HRDashboard() {
     setOkMsg(null); setErr(null);
     const { error } = await supabase.from("company_settings").upsert({ key, value }, { onConflict: "key" });
     if (error) { setErr(error.message); } else { setOkMsg("Branding saved."); await loadBranding(); }
-  }
-
-  async function updateUserRole(userId: string, role: string) {
-    setOkMsg(null); setErr(null);
-    const { error } = await supabase.from("users").update({ role }).eq("id", userId);
-    if (error) setErr(error.message); else { setOkMsg("User updated."); await refreshUsers(); }
   }
 
   async function createBasicUser(e: React.FormEvent) {
@@ -77,13 +157,34 @@ export default function HRDashboard() {
     if (error) setErr(error.message); else { setOkMsg("User metadata created."); await refreshUsers(); setNewUser({ email: "", role: "staff" }); }
   }
 
+  async function inviteUserByEmail(email: string) {
+    if (!email) { setErr("Enter an email to invite."); return; }
+    try {
+      setErr(null); setOkMsg(null);
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined }
+      });
+      if (error) throw error;
+      setOkMsg("Invite sent (magic link).");
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to send invite");
+    }
+  }
+
+  async function updateUserJobShift(userId: string, patch: { job_title_id?: string | null; shift_id?: string | null }) {
+    setOkMsg(null); setErr(null);
+    const { error } = await supabase.from("users").update(patch).eq("id", userId);
+    if (error) setErr(error.message); else { setOkMsg("User updated."); await refreshUsers(); }
+  }
+
   async function updateLeaveStatus(id: string, status: "approved" | "rejected") {
     const { error } = await supabase.from("leave_requests").update({ status }).eq("id", id);
     if (error) setErr(error.message); else { setOkMsg(`Leave ${status}.`); await refreshApprovals(); }
   }
 
   async function updateCorrectionStatus(id: string, status: "approved" | "rejected") {
-    const { error } = await supabase.from("correction_requests").update({ status }).eq("id", id);
+    const { error } = await supabase.from("correction_requests").update({ status, reviewer_id: sessionUserId }).eq("id", id);
     if (error) setErr(error.message); else { setOkMsg(`Correction ${status}.`); await refreshApprovals(); }
   }
 
@@ -133,28 +234,152 @@ export default function HRDashboard() {
     window.print(); // Simple print-to-PDF approach for now
   }
 
+  // --- Reports helpers for analytics views ---
+  async function exportDailyAttendance() {
+    const { data, error } = await supabase.from("v_staff_daily_attendance").select("*").limit(5000);
+    if (error) { setErr(error.message); return; }
+    exportCSV("staff_daily_attendance.csv", data ?? []);
+  }
+
+  async function exportLatenessPatterns() {
+    const { data, error } = await supabase.from("v_lateness_patterns").select("*").limit(5000);
+    if (error) { setErr(error.message); return; }
+    exportCSV("lateness_patterns.csv", data ?? []);
+  }
+
+  async function exportOvertimeSummary() {
+    const { data, error } = await supabase.from("v_overtime_summary").select("*").limit(5000);
+    if (error) { setErr(error.message); return; }
+    exportCSV("overtime_summary.csv", data ?? []);
+  }
+
+  async function exportAbsence30d() {
+    const { data, error } = await supabase.from("v_absence_30d").select("*").limit(50000);
+    if (error) { setErr(error.message); return; }
+    exportCSV("absence_last_30_days.csv", data ?? []);
+  }
+
+  async function updateUserRole(userId: string, role: string) {
+    setOkMsg(null); setErr(null);
+    const { error } = await supabase.from("users").update({ role }).eq("id", userId);
+    if (error) setErr(error.message); else { setOkMsg("User updated."); await refreshUsers(); }
+  }
+
+  // --- Teams management ---
+  async function loadTeams() {
+    const { data } = await supabase.from("teams").select("id,name").order("name");
+    setTeams(data ?? []);
+  }
+  async function createTeam() {
+    if (!teamName.trim()) return;
+    const { error } = await supabase.from("teams").insert({ name: teamName.trim() });
+    if (error) { setErr(error.message); } else { setTeamName(""); await loadTeams(); setOkMsg("Team created."); }
+  }
+  async function assignMember() {
+    if (!memberTeamId || !memberUserId) return;
+    const { error } = await supabase.from("team_members").upsert({ team_id: memberTeamId, user_id: memberUserId });
+    if (error) setErr(error.message); else { setOkMsg("Member assigned."); }
+  }
+  async function assignManager() {
+    if (!managerTeamId || !managerUserId) return;
+    const { error } = await supabase.from("team_managers").upsert({ team_id: managerTeamId, user_id: managerUserId });
+    if (error) setErr(error.message); else { setOkMsg("Manager assigned."); }
+  }
+
+  // --- Warnings ---
+  async function loadWarnings() {
+    const { data } = await supabase.from("warnings").select("id,user_id,reason,issued_by,created_at").order("created_at", { ascending: false }).limit(50);
+    setWarnings(data ?? []);
+  }
+
+  // --- HR Settings data loaders ---
+  async function loadSettingsData() {
+    const [{ data: jt }, { data: sh }, { data: hol }, { data: br }] = await Promise.all([
+      supabase.from("job_titles").select("*").order("name"),
+      supabase.from("shifts").select("*").order("name"),
+      supabase.from("holidays").select("*").order("day"),
+      supabase.from("break_rules").select("*").order("name"),
+    ]);
+    setJobTitles(jt ?? []);
+    setShifts(sh ?? []);
+    setHolidays(hol ?? []);
+    setBreakRules(br ?? []);
+  }
+  async function addJobTitle() {
+    if (!newJobTitle.trim()) return;
+    const { error } = await supabase.from("job_titles").insert({ name: newJobTitle.trim() });
+    if (error) setErr(error.message); else { setNewJobTitle(""); setOkMsg("Job title added."); await loadSettingsData(); }
+  }
+  async function addShift() {
+    if (!newShift.name.trim() || !newShift.duration_minutes) return;
+    const { error } = await supabase.from("shifts").insert(newShift);
+    if (error) setErr(error.message); else { setNewShift({ name: "", duration_minutes: 480 }); setOkMsg("Shift added."); await loadSettingsData(); }
+  }
+  async function addHoliday() {
+    if (!newHoliday.day) return;
+    const { error } = await supabase.from("holidays").insert(newHoliday);
+    if (error) setErr(error.message); else { setNewHoliday({ day: "", name: "" }); setOkMsg("Holiday added."); await loadSettingsData(); }
+  }
+  async function addBreakRule() {
+    if (!newBreakRule.name.trim()) return;
+    const { error } = await supabase.from("break_rules").insert(newBreakRule);
+    if (error) setErr(error.message); else { setNewBreakRule({ name: "", minutes: 60 }); setOkMsg("Break rule added."); await loadSettingsData(); }
+  }
+
   return (
     <RoleGate allow={["hr", "ceo"]}>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold">HR/CEO Dashboard</h1>
-          {/* CEO badge is shown in header via HeaderBadges */}
+          {/* Quick Punch for HR/CEO */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => logAttendance("check_in")}
+              disabled={punchLoading || !sessionUserId}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-50"
+              title="Punch In"
+            >
+              Punch In
+            </button>
+            <button
+              onClick={() => logAttendance("check_out")}
+              disabled={punchLoading || !sessionUserId}
+              className="rounded-md bg-rose-600 px-3 py-1.5 text-white disabled:opacity-50"
+              title="Punch Out"
+            >
+              Punch Out
+            </button>
+            {role === "ceo" && (
+              <button
+                onClick={() => setGoldMode((v) => !v)}
+                className={`rounded-md px-3 py-1.5 text-sm transition-all duration-200 ${goldMode ? "bg-[#D4AF37] text-black shadow-[0_0_16px_rgba(212,175,55,0.55)]" : "border border-[#D4AF37]/60 text-[#D4AF37] hover:bg-[#D4AF37]/10"}`}
+                title="Toggle CEO Gold Theme"
+              >
+                {goldMode ? "Gold On" : "Gold Off"}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Tabs */}
-        <nav className="flex gap-2 overflow-x-auto rounded-lg border p-1 text-sm" aria-label="Sections">
-          <a className="rounded-md bg-brand-primary/10 px-3 py-1.5 font-medium text-brand-primary">Overview</a>
-          <a className="rounded-md px-3 py-1.5 opacity-80 hover:opacity-100">Approvals</a>
-          <a className="rounded-md px-3 py-1.5 opacity-80 hover:opacity-100">Staff Admin</a>
-          <a className="rounded-md px-3 py-1.5 opacity-80 hover:opacity-100">Settings</a>
-          <a className="rounded-md px-3 py-1.5 opacity-80 hover:opacity-100">HR Folders</a>
-          <a className="rounded-md px-3 py-1.5 opacity-80 hover:opacity-100">Reports</a>
-          {role === "ceo" && <a className="rounded-md px-3 py-1.5 opacity-80 hover:opacity-100">CEO</a>}
+        <nav className={`flex gap-2 overflow-x-auto rounded-lg border p-1 text-sm backdrop-blur supports-[backdrop-filter]:backdrop-blur-md ${goldMode && role === 'ceo' ? 'bg-[#1a1400]/40 border-[#D4AF37]/30' : 'bg-white/60 dark:bg-black/20 border-brand-primary/20'}`} aria-label="Sections">
+          <button onClick={() => setTab("overview")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "overview" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Overview</button>
+          <button onClick={() => setTab("approvals")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "approvals" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Approvals</button>
+          <button onClick={() => setTab("staff")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "staff" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Staff Admin</button>
+          <button onClick={() => setTab("settings")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "settings" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Settings</button>
+          <button onClick={() => setTab("teams")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "teams" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Teams</button>
+          <button onClick={() => setTab("folders")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "folders" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>HR Folders</button>
+          <button onClick={() => setTab("reports")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "reports" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Reports</button>
+          <button onClick={() => setTab("warnings")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "warnings" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Warnings</button>
+          {role === "ceo" && (
+            <button onClick={() => setTab("ceo")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "ceo" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>CEO</button>
+          )}
         </nav>
 
+        {/* Overview Tab */}
+        {tab === "overview" && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {/* Overview */}
-          <section className="rounded-lg border p-4">
+          <section className={`rounded-xl border p-4 shadow-md hover:shadow-xl transition-all duration-300 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30 dark:border-[#D4AF37]/20' : 'border-brand-primary/20 dark:border-brand.light/10'}`}>
             <h2 className="mb-2 text-lg font-medium">Overview</h2>
             <CEOSnapshot />
             <div className="mt-4">
@@ -164,15 +389,22 @@ export default function HRDashboard() {
                   {inout.slice(0, 12).map((r: any) => (
                     <li key={r.user_id} className="flex justify-between border-b py-1 last:border-b-0">
                       <span>{r.user_name ?? r.full_name ?? r.user_id}</span>
-                      <span className="opacity-70">{r.status ?? r.last_event ?? "—"}</span>
+                      <span className="opacity-70">
+                        {r.status ?? r.last_event ?? "—"}
+                        {r.last_ts ? ` · ${fmtDuration(Math.max(0, nowMs - new Date(r.last_ts).getTime()))}` : ""}
+                      </span>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
           </section>
+        </div>
+        )}
 
-          {/* Approvals */}
+        {/* Approvals Tab */}
+        {tab === "approvals" && (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <section className="rounded-lg border p-4">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-lg font-medium">Approvals</h2>
@@ -205,9 +437,17 @@ export default function HRDashboard() {
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">{r.reason}</div>
-                        <div className="text-xs opacity-70">Requested: {new Date(r.requested_at).toLocaleString()}</div>
+                        <div className="text-xs opacity-70">Requested: {r.requested_at ? new Date(r.requested_at).toLocaleString() : "—"}</div>
+                        {r.target_date && (
+                          <div className="text-xs opacity-70">Target date: {new Date(r.target_date).toLocaleDateString()}</div>
+                        )}
+                        {r.requested_change && (
+                          <pre className="mt-1 max-h-28 overflow-auto rounded bg-black/5 p-2 text-[11px] leading-snug">{JSON.stringify(r.requested_change, null, 2)}</pre>
+                        )}
+                        <div className="mt-1 text-xs opacity-70">Reviewer: {r.reviewer_id ? r.reviewer_id : '—'}</div>
                       </div>
                       <div className="flex gap-2">
+                        <button onClick={() => supabase.from('correction_requests').update({ reviewer_id: sessionUserId }).eq('id', r.id).then(()=>{ setOkMsg('Assigned as reviewer.'); refreshApprovals(); })} className="rounded-md border px-2 py-1 text-xs">Assign me</button>
                         <button onClick={() => updateCorrectionStatus(r.id, "approved")} className="rounded-md bg-emerald-600 px-2 py-1 text-white">Approve</button>
                         <button onClick={() => updateCorrectionStatus(r.id, "rejected")} className="rounded-md bg-rose-600 px-2 py-1 text-white">Reject</button>
                       </div>
@@ -217,8 +457,12 @@ export default function HRDashboard() {
               </ul>
             )}
           </section>
+          {/* close approvals container and conditional */}
+        </div>
+        )}
 
           {/* Staff Admin */}
+          {tab === "staff" && (
           <section className="rounded-lg border p-4">
             <h2 className="mb-2 text-lg font-medium">Staff Admin</h2>
             <form onSubmit={createBasicUser} className="mb-3 flex flex-wrap items-end gap-2 text-sm">
@@ -237,6 +481,7 @@ export default function HRDashboard() {
                 </select>
               </div>
               <button type="submit" className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
+              <button type="button" onClick={() => inviteUserByEmail(newUser?.email ?? "")} className="rounded-md border px-3 py-2">Send Invite</button>
             </form>
             <div className="max-h-64 overflow-auto rounded-md border">
               <table className="w-full text-left text-sm">
@@ -245,6 +490,8 @@ export default function HRDashboard() {
                     <th className="py-2">Name</th>
                     <th className="py-2">Email</th>
                     <th className="py-2">Role</th>
+                    <th className="py-2">Job Title</th>
+                    <th className="py-2">Shift</th>
                     <th className="py-2">Actions</th>
                   </tr>
                 </thead>
@@ -254,6 +501,18 @@ export default function HRDashboard() {
                       <td className="py-2">{u.full_name ?? u.id}</td>
                       <td className="py-2">{u.email ?? "—"}</td>
                       <td className="py-2">{u.role}</td>
+                      <td className="py-2">
+                        <select value={u.job_title_id ?? ""} onChange={(e) => updateUserJobShift(u.id, { job_title_id: e.target.value || null })} className="rounded-md border px-2 py-1 text-xs min-w-[160px]">
+                          <option value="">—</option>
+                          {jobTitles.map((jt:any)=> (<option key={jt.id} value={jt.id}>{jt.name}</option>))}
+                        </select>
+                      </td>
+                      <td className="py-2">
+                        <select value={u.shift_id ?? ""} onChange={(e) => updateUserJobShift(u.id, { shift_id: e.target.value || null })} className="rounded-md border px-2 py-1 text-xs min-w-[160px]">
+                          <option value="">—</option>
+                          {shifts.map((sh:any)=> (<option key={sh.id} value={sh.id}>{sh.name}</option>))}
+                        </select>
+                      </td>
                       <td className="py-2">
                         <select value={u.role} onChange={(e) => updateUserRole(u.id, e.target.value)} className="rounded-md border px-2 py-1 text-xs">
                           <option value="staff">staff</option>
@@ -269,8 +528,10 @@ export default function HRDashboard() {
               </table>
             </div>
           </section>
+          )}
 
           {/* Settings */}
+          {tab === "settings" && (
           <section className="rounded-lg border p-4">
             <h2 className="mb-2 text-lg font-medium">Settings</h2>
             <div className="space-y-3 text-sm">
@@ -288,11 +549,60 @@ export default function HRDashboard() {
                 </div>
                 <button onClick={() => setBrandSetting("brand_logo_url", brand.logo_url ?? "")} className="rounded-md bg-brand-primary px-3 py-2 text-white">Save</button>
               </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="rounded-md border p-3">
+                  <h3 className="mb-2 text-sm font-semibold">Job Titles</h3>
+                  <div className="mb-2 flex gap-2">
+                    <input value={newJobTitle} onChange={(e) => setNewJobTitle(e.target.value)} placeholder="e.g., Accountant" className="flex-1 rounded-md border px-3 py-2" />
+                    <button onClick={addJobTitle} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
+                  </div>
+                  <ul className="max-h-36 overflow-auto text-xs">
+                    {jobTitles.map((jt) => (<li key={jt.id} className="border-b py-1 last:border-b-0">{jt.name}</li>))}
+                  </ul>
+                </div>
+                <div className="rounded-md border p-3">
+                  <h3 className="mb-2 text-sm font-semibold">Shifts</h3>
+                  <div className="mb-2 grid grid-cols-4 gap-2">
+                    <input value={newShift.name} onChange={(e) => setNewShift((s) => ({ ...s, name: e.target.value }))} placeholder="Name" className="rounded-md border px-2 py-2" />
+                    <input type="number" value={newShift.duration_minutes} onChange={(e) => setNewShift((s) => ({ ...s, duration_minutes: Number(e.target.value) }))} placeholder="Minutes" className="rounded-md border px-2 py-2" />
+                    <input type="time" value={newShift.start_time ?? ""} onChange={(e) => setNewShift((s) => ({ ...s, start_time: e.target.value }))} className="rounded-md border px-2 py-2" />
+                    <input type="time" value={newShift.end_time ?? ""} onChange={(e) => setNewShift((s) => ({ ...s, end_time: e.target.value }))} className="rounded-md border px-2 py-2" />
+                  </div>
+                  <button onClick={addShift} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
+                  <ul className="mt-2 max-h-36 overflow-auto text-xs">
+                    {shifts.map((sh) => (<li key={sh.id} className="border-b py-1 last:border-b-0">{sh.name} — {sh.duration_minutes} mins</li>))}
+                  </ul>
+                </div>
+                <div className="rounded-md border p-3">
+                  <h3 className="mb-2 text-sm font-semibold">Holidays</h3>
+                  <div className="mb-2 flex gap-2">
+                    <input type="date" value={newHoliday.day} onChange={(e) => setNewHoliday((s) => ({ ...s, day: e.target.value }))} className="rounded-md border px-3 py-2" />
+                    <input value={newHoliday.name} onChange={(e) => setNewHoliday((s) => ({ ...s, name: e.target.value }))} placeholder="Name (optional)" className="rounded-md border px-3 py-2" />
+                    <button onClick={addHoliday} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
+                  </div>
+                  <ul className="max-h-36 overflow-auto text-xs">
+                    {holidays.map((h) => (<li key={h.id} className="border-b py-1 last:border-b-0">{new Date(h.day).toLocaleDateString()} — {h.name ?? ""}</li>))}
+                  </ul>
+                </div>
+                <div className="rounded-md border p-3">
+                  <h3 className="mb-2 text-sm font-semibold">Break Rules</h3>
+                  <div className="mb-2 flex gap-2">
+                    <input value={newBreakRule.name} onChange={(e) => setNewBreakRule((s) => ({ ...s, name: e.target.value }))} placeholder="Name" className="rounded-md border px-3 py-2" />
+                    <input type="number" value={newBreakRule.minutes} onChange={(e) => setNewBreakRule((s) => ({ ...s, minutes: Number(e.target.value) }))} placeholder="Minutes" className="rounded-md border px-3 py-2" />
+                    <button onClick={addBreakRule} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
+                  </div>
+                  <ul className="max-h-36 overflow-auto text-xs">
+                    {breakRules.map((b) => (<li key={b.id} className="border-b py-1 last:border-b-0">{b.name} — {b.minutes} mins</li>))}
+                  </ul>
+                </div>
+              </div>
               <p className="text-xs opacity-70">Holidays, job titles and auto warning rules can be added later. This saves branding in `company_settings`.</p>
             </div>
           </section>
+          )}
 
           {/* HR Folders */}
+          {tab === "folders" && (
           <section className="rounded-lg border p-4">
             <h2 className="mb-2 text-lg font-medium">HR Folders</h2>
             <form onSubmit={handleUpload} className="space-y-3 text-sm">
@@ -320,9 +630,11 @@ export default function HRDashboard() {
               <p className="text-xs opacity-70">Uploads go to storage bucket `hr-files` and metadata is saved in `staff_files`.</p>
             </form>
           </section>
+          )}
 
           {/* Reports */}
-          <section className="rounded-lg border p-4 md:col-span-2">
+          {tab === "reports" && (
+          <section className="rounded-xl border p-4 md:col-span-2 shadow-md hover:shadow-xl transition-all duration-300 border-brand-primary/20 dark:border-brand.light/10">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-lg font-medium">Reports</h2>
               <div className="flex gap-2">
@@ -330,9 +642,108 @@ export default function HRDashboard() {
                 {role === "ceo" && <button onClick={exportCEOPDF} className="rounded-md border px-3 py-2 text-sm">Export CEO Briefing (PDF)</button>}
               </div>
             </div>
-            <p className="text-sm text-gray-600 dark:text-gray-300">Exports based on `v_ceo_snapshot` for now.</p>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 text-sm">
+              <div className="rounded-md border p-3">
+                <h3 className="mb-2 font-semibold">Staff Daily Attendance</h3>
+                <p className="mb-2 opacity-70">First check-in and last check-out per user per day (30 days).</p>
+                <button onClick={exportDailyAttendance} className="rounded-md border px-3 py-2">Export CSV</button>
+              </div>
+              <div className="rounded-md border p-3">
+                <h3 className="mb-2 font-semibold">Lateness Patterns</h3>
+                <p className="mb-2 opacity-70">Flags late check-ins based on shift start + grace.</p>
+                <button onClick={exportLatenessPatterns} className="rounded-md border px-3 py-2">Export CSV</button>
+              </div>
+              <div className="rounded-md border p-3">
+                <h3 className="mb-2 font-semibold">Overtime Summary</h3>
+                <p className="mb-2 opacity-70">Worked hours vs scheduled shift hours.</p>
+                <button onClick={exportOvertimeSummary} className="rounded-md border px-3 py-2">Export CSV</button>
+              </div>
+              <div className="rounded-md border p-3">
+                <h3 className="mb-2 font-semibold">Absence (last 30 days)</h3>
+                <p className="mb-2 opacity-70">Days with no check-in, excluding holidays.</p>
+                <button onClick={exportAbsence30d} className="rounded-md border px-3 py-2">Export CSV</button>
+              </div>
+            </div>
           </section>
-        </div>
+          )}
+
+          {/* Teams */}
+          {tab === "teams" && (
+          <section className="rounded-lg border p-4 md:col-span-2">
+            <h2 className="mb-2 text-lg font-medium">Teams</h2>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3 text-sm">
+              <div className="rounded-md border p-3">
+                <h3 className="mb-2 text-sm font-semibold">Create Team</h3>
+                <div className="flex gap-2">
+                  <input value={teamName} onChange={(e) => setTeamName(e.target.value)} placeholder="Team name" className="flex-1 rounded-md border px-3 py-2" />
+                  <button onClick={createTeam} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
+                </div>
+                <ul className="mt-2 max-h-36 overflow-auto text-xs">
+                  {teams.map((t) => (<li key={t.id} className="border-b py-1 last:border-b-0">{t.name}</li>))}
+                </ul>
+              </div>
+              <div className="rounded-md border p-3">
+                <h3 className="mb-2 text-sm font-semibold">Assign Member</h3>
+                <div className="mb-2 grid grid-cols-2 gap-2">
+                  <select value={memberTeamId} onChange={(e) => setMemberTeamId(e.target.value)} className="rounded-md border px-2 py-2">
+                    <option value="">Team…</option>
+                    {teams.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                  </select>
+                  <select value={memberUserId} onChange={(e) => setMemberUserId(e.target.value)} className="rounded-md border px-2 py-2">
+                    <option value="">User…</option>
+                    {users.map((u) => (<option key={u.id} value={u.id}>{u.full_name ?? u.email ?? u.id}</option>))}
+                  </select>
+                </div>
+                <button onClick={assignMember} className="rounded-md bg-brand-primary px-3 py-2 text-white">Assign</button>
+              </div>
+              <div className="rounded-md border p-3">
+                <h3 className="mb-2 text-sm font-semibold">Assign Manager</h3>
+                <div className="mb-2 grid grid-cols-2 gap-2">
+                  <select value={managerTeamId} onChange={(e) => setManagerTeamId(e.target.value)} className="rounded-md border px-2 py-2">
+                    <option value="">Team…</option>
+                    {teams.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                  </select>
+                  <select value={managerUserId} onChange={(e) => setManagerUserId(e.target.value)} className="rounded-md border px-2 py-2">
+                    <option value="">User…</option>
+                    {users.map((u) => (<option key={u.id} value={u.id}>{u.full_name ?? u.email ?? u.id}</option>))}
+                  </select>
+                </div>
+                <button onClick={assignManager} className="rounded-md bg-brand-primary px-3 py-2 text-white">Assign</button>
+              </div>
+            </div>
+          </section>
+          )}
+
+          {/* Warnings (latest 50) */}
+          {tab === "warnings" && (
+          <section className="rounded-lg border p-4 md:col-span-2">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-lg font-medium">Warnings</h2>
+              <button onClick={loadWarnings} className="text-xs text-brand-primary">Refresh</button>
+            </div>
+            {warnings.length === 0 ? (
+              <p className="text-sm opacity-70">No warnings yet.</p>
+            ) : (
+              <div className="max-h-64 overflow-auto rounded-md border">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b"><th className="py-2">User</th><th className="py-2">Reason</th><th className="py-2">Issued By</th><th className="py-2">At</th></tr>
+                  </thead>
+                  <tbody>
+                    {warnings.map((w) => (
+                      <tr key={w.id} className="border-b last:border-b-0">
+                        <td className="py-1">{w.user_id}</td>
+                        <td className="py-1">{w.reason}</td>
+                        <td className="py-1">{w.issued_by}</td>
+                        <td className="py-1">{new Date(w.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
 
         {err && <p className="text-sm text-rose-600">{err}</p>}
         {okMsg && <p className="text-sm text-emerald-600">{okMsg}</p>}
@@ -340,4 +751,3 @@ export default function HRDashboard() {
     </RoleGate>
   );
 }
-

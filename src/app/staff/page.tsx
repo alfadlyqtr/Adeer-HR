@@ -11,6 +11,15 @@ function startOfTodayLocalISO() {
   return d.toISOString();
 }
 
+function fmtDuration(ms: number) {
+  if (ms < 0) ms = 0;
+  const s = Math.floor(ms / 1000);
+  const hh = Math.floor(s / 3600).toString().padStart(2, "0");
+  const mm = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
+  const ss = Math.floor(s % 60).toString().padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
 export default function StaffDashboard() {
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [punchLoading, setPunchLoading] = useState(false);
@@ -24,6 +33,7 @@ export default function StaffDashboard() {
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [geo, setGeo] = useState<{ lat: number; lon: number } | null>(null);
   const [pendingQueue, setPendingQueue] = useState<any[]>([]);
+  const [now, setNow] = useState<number>(Date.now());
 
   // Load session and initial data
   useEffect(() => {
@@ -39,6 +49,12 @@ export default function StaffDashboard() {
       ]);
     })();
     return () => { active = false; };
+  }, []);
+
+  // Tick every second for live timers
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
   }, []);
 
   // Try to get geolocation once (non-blocking)
@@ -189,12 +205,32 @@ export default function StaffDashboard() {
   }
 
   const streak = useMemo(() => {
-    // Basic 7-day check-in streak using timeline + extra fetch for previous days if needed
-    // For simplicity, compute from all timeline entries we have today only -> not a real long streak
-    // Placeholder: if user checked in today, streak = 1 else 0
     const hasTodayCheckIn = timeline.some((t) => t.type === "check_in");
     return hasTodayCheckIn ? 1 : 0;
   }, [timeline]);
+
+  // Compute live timer label
+  const liveLabel = useMemo(() => {
+    if (!timeline.length) return null;
+    const lastCheckIn = [...timeline].reverse().find((t) => t.type === "check_in");
+    const lastCheckOut = [...timeline].reverse().find((t) => t.type === "check_out");
+    const lastBreakStart = [...timeline].reverse().find((t) => t.type === "break_start");
+    const lastBreakEnd = [...timeline].reverse().find((t) => t.type === "break_end");
+
+    const nowMs = now;
+
+    if (breakActive && lastBreakStart) {
+      const since = new Date(lastBreakStart.ts).getTime();
+      return `On break for ${fmtDuration(nowMs - since)}`;
+    }
+
+    if (lastCheckIn && (!lastCheckOut || new Date(lastCheckIn.ts) > new Date(lastCheckOut.ts))) {
+      const since = new Date(lastCheckIn.ts).getTime();
+      return `Working for ${fmtDuration(nowMs - since)}`;
+    }
+
+    return null;
+  }, [timeline, breakActive, now]);
 
   return (
     <RoleGate allow={["staff", "assistant_manager", "manager", "hr", "ceo"]}>
@@ -209,6 +245,7 @@ export default function StaffDashboard() {
               <button disabled={punchLoading} onClick={() => logAttendance("check_out")} className="rounded-md bg-rose-600 px-3 py-1.5 text-white disabled:opacity-60">Punch Out</button>
             </div>
             <p className="mt-2 text-xs text-gray-500">Writes to table `attendance_logs` with types `check_in`/`check_out`.</p>
+            {liveLabel && <p className="mt-1 text-sm font-medium text-brand-primary">{liveLabel}</p>}
             {confirmMsg && (
               <p className="mt-2 text-sm text-emerald-600">{confirmMsg}</p>
             )}
@@ -347,4 +384,3 @@ export default function StaffDashboard() {
     </RoleGate>
   );
 }
-

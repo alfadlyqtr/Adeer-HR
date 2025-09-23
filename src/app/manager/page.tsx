@@ -23,6 +23,7 @@ export default function ManagerDashboard() {
   const [warnReason, setWarnReason] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
 
   const isAssistant = role === "assistant_manager";
 
@@ -33,7 +34,7 @@ export default function ManagerDashboard() {
       if (!active || !session) return;
       setSessionUserId(session.user.id);
       await Promise.all([
-        refreshInOut(),
+        refreshInOut(session.user.id),
         refreshLeaves(),
         refreshHeatmap(),
       ]);
@@ -41,22 +42,67 @@ export default function ManagerDashboard() {
     return () => { active = false; };
   }, []);
 
+  // Tick every second for live timers
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  function fmtDuration(ms: number) {
+    if (ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    const hh = Math.floor(s / 3600).toString().padStart(2, "0");
+    const mm = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
+    const ss = Math.floor(s % 60).toString().padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  }
+
   // Realtime: on any attendance_logs change, refresh current status
   useEffect(() => {
     const channel = supabase
       .channel("attendance-logs")
       .on("postgres_changes", { event: "*", schema: "public", table: "attendance_logs" }, () => {
-        refreshInOut();
+        if (sessionUserId) refreshInOut(sessionUserId);
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, []);
+  }, [sessionUserId]);
 
-  async function refreshInOut() {
-    const { data, error } = await supabase
+  async function getManagedMemberIds(managerId: string): Promise<string[] | null> {
+    // HR/CEO see all
+    if (role === "hr" || role === "ceo") return null;
+    // Assistant manager and manager: get their teams and member ids
+    const { data: tms } = await supabase
+      .from("team_managers")
+      .select("team_id")
+      .eq("user_id", managerId);
+    const teamIds = (tms ?? []).map((r: any) => r.team_id);
+    if (!teamIds.length) return [];
+    const { data: members } = await supabase
+      .from("team_members")
+      .select("user_id")
+      .in("team_id", teamIds as any);
+    return (members ?? []).map((r: any) => r.user_id);
+  }
+
+  async function refreshInOut(uid?: string) {
+    const managerId = uid ?? sessionUserId;
+    let memberIds: string[] | null = null;
+    if (managerId) {
+      memberIds = await getManagedMemberIds(managerId);
+    }
+    let query = supabase
       .from("v_current_status")
       .select("*")
-      .order("user_name", { ascending: true });
+      .order("user_id", { ascending: true });
+    if (memberIds && memberIds.length > 0) {
+      query = query.in("user_id", memberIds as any);
+    } else if (memberIds && memberIds.length === 0) {
+      // Manager with no teams -> empty
+      setInout([]);
+      return;
+    }
+    const { data, error } = await query;
     if (error) { setErr(error.message); return; }
     setInout(data ?? []);
   }
@@ -127,7 +173,7 @@ export default function ManagerDashboard() {
           <section className="rounded-lg border p-4 md:col-span-2">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-lg font-medium">Realtime team view</h2>
-              <button onClick={refreshInOut} className="text-xs text-brand-primary">Refresh</button>
+              <button onClick={() => refreshInOut()} className="text-xs text-brand-primary">Refresh</button>
             </div>
             {inout.length === 0 ? (
               <p className="text-sm text-gray-600 dark:text-gray-300">No team members visible.</p>
@@ -145,8 +191,8 @@ export default function ManagerDashboard() {
                     {inout.map((r: any) => (
                       <tr key={r.user_id} className="border-b last:border-b-0">
                         <td className="py-2">{r.user_name ?? r.full_name ?? r.user_id}</td>
-                        <td className="py-2">{r.status ?? r.last_event ?? "—"}</td>
-                        <td className="py-2">{r.since ? new Date(r.since).toLocaleTimeString() : r.last_ts ? new Date(r.last_ts).toLocaleTimeString() : "—"}</td>
+                        <td className="py-2">{r.status ?? r.last_event ?? "—"} {r.last_ts ? `· ${fmtDuration(Math.max(0, nowMs - new Date(r.last_ts).getTime()))}` : ""}</td>
+                        <td className="py-2">{r.last_ts ? new Date(r.last_ts).toLocaleTimeString() : "—"}</td>
                       </tr>
                     ))}
                   </tbody>

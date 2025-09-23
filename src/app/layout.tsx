@@ -7,6 +7,7 @@ import HeaderBadges from "@/components/HeaderBadges";
 import { ThemeProvider } from "next-themes";
 import ThemeToggle from "@/components/ThemeToggle";
 import PWARegister from "@/components/PWARegister";
+import LogoutButton from "@/components/LogoutButton";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -36,6 +37,7 @@ export default function RootLayout({
 
               <div id="header-actions" className="flex items-center gap-3">
                 <HeaderBadges />
+                <LogoutButton />
                 <ThemeToggle />
               </div>
             </div>
