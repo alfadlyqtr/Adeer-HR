@@ -2,7 +2,7 @@ import Link from "next/link";
 import fs from "node:fs";
 import path from "node:path";
 import QuotesRotator from "@/components/QuotesRotator";
-import AutoRedirectDashboard from "@/components/AutoRedirectDashboard";
+import CEOBroadcast from "@/components/CEOBroadcast";
 
 export default function Home() {
   // Load quotes from project root file d:\\CascadeProjects\\Adeer-HR\\quots
@@ -24,8 +24,7 @@ export default function Home() {
 
   return (
     <div className="relative">
-      {/* If authenticated, redirect to proper dashboard */}
-      <AutoRedirectDashboard />
+      {/* Home page no longer auto-redirects. Use /dashboard as the role checker route. */}
       {/* Hero Section (gradient banner) */}
       <section className="relative isolate overflow-hidden brand-gradient rounded-3xl p-10 text-white shadow-md md:p-14">
         <div className="pointer-events-none absolute -top-32 -left-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
@@ -75,6 +74,11 @@ export default function Home() {
             </ul>
           </div>
         </div>
+      </section>
+
+      {/* CEO Broadcast (site-wide message) */}
+      <section className="container-app mt-8">
+        <CEOBroadcast />
       </section>
 
       {/* CEO Message + Daily Inspiration side-by-side */}

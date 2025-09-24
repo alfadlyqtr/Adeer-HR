@@ -10,12 +10,26 @@ export default function LogoutButton() {
   const handleLogout = async () => {
     try {
       setLoading(true);
-      await supabase.auth.signOut();
-      router.replace("/login");
+      
+      // Use our dedicated signout page which handles cleanup properly
+      if (typeof window !== 'undefined') {
+        // Force clear tokens locally first
+        window.localStorage.removeItem('supabase.auth.token');
+        window.sessionStorage.removeItem('supabase.auth.token');
+        
+        // Hard navigation to dedicated signout page
+        window.location.href = '/signout';
+      } else {
+        // Fallback for SSR context
+        await supabase.auth.signOut();
+        router.replace('/login?signout=true');
+      }
     } catch (e) {
-      // no-op; optional toast could go here
-    } finally {
-      setLoading(false);
+      console.error('Logout error:', e);
+      // Force redirect to login even on error
+      if (typeof window !== 'undefined') {
+        window.location.href = '/login?signout=error';
+      }
     }
   };
 
@@ -23,6 +37,7 @@ export default function LogoutButton() {
     <button
       onClick={handleLogout}
       disabled={loading}
+      aria-busy={loading}
       className="rounded-md border border-black/10 bg-white/70 px-3 py-1.5 text-sm hover:bg-white disabled:opacity-50 dark:border-white/10 dark:bg-black/40 dark:hover:bg-black/50"
       title="Sign out"
     >

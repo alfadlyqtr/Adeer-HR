@@ -1,6 +1,7 @@
 "use client";
 import RoleGate from "@/components/RoleGate";
 import CEOSnapshot from "@/components/CEOSnapshot";
+import CEOBroadcast from "@/components/CEOBroadcast";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useUserRole } from "@/hooks/useUserRole";
@@ -10,6 +11,7 @@ export default function HRDashboard() {
   const [goldMode, setGoldMode] = useState(false);
   const [tab, setTab] = useState<"overview" | "approvals" | "staff" | "settings" | "teams" | "folders" | "reports" | "warnings" | "ceo">("overview");
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState<string>("");
   const [punchLoading, setPunchLoading] = useState(false);
   const [inout, setInout] = useState<any[]>([]);
   const [leaveReqs, setLeaveReqs] = useState<any[]>([]);
@@ -18,6 +20,47 @@ export default function HRDashboard() {
   const [newUser, setNewUser] = useState<{ email: string; role: string } | null>({ email: "", role: "staff" });
   const [brand, setBrand] = useState<{ color?: string; logo_url?: string }>({});
   const [uploading, setUploading] = useState(false);
+  // Central role management sourced from public.user_roles
+  const [userRolesMap, setUserRolesMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('user_roles').select('user_id, role');
+      if (data) {
+        const map: Record<string,string> = {};
+        for (const r of data as any[]) map[r.user_id] = r.role;
+        setUserRolesMap(map);
+      }
+    })();
+  }, []);
+
+  // --- CEO message editor helpers (CEO only) ---
+  async function loadCeoMessage() {
+    const { data } = await supabase.from("company_settings").select("value").eq("key", "ceo_message").maybeSingle();
+    setCeoMsgDraft((data?.value as string | undefined) ?? "");
+  }
+
+  async function saveCeoMessage() {
+    setOkMsg(null); setErr(null);
+    const { error } = await supabase.from("company_settings").upsert({ key: "ceo_message", value: ceoMsgDraft }, { onConflict: "key" });
+    if (error) setErr(error.message); else setOkMsg("CEO message saved.");
+  }
+
+  async function refreshUserRoles() {
+    const { data, error } = await supabase.from('user_roles').select('user_id, role');
+    if (error) { setErr(error.message); return; }
+    const map: Record<string,string> = {};
+    for (const r of (data ?? []) as any[]) map[r.user_id] = r.role;
+    setUserRolesMap(map);
+  }
+
+  async function updateUserRoleCentral(userId: string, newRole: string) {
+    const { error: e1 } = await supabase.from('user_roles').upsert({ user_id: userId, role: newRole });
+    const { error: e2 } = await supabase.from('users').update({ role: newRole }).eq('id', userId);
+    if (e1 || e2) { setErr((e1?.message ?? '') || (e2?.message ?? 'Failed to update role')); return; }
+    setUserRolesMap((s) => ({ ...s, [userId]: newRole }));
+    setOkMsg('Role updated.');
+  }
   const [fileMeta, setFileMeta] = useState<{ user_id: string; category: string; expiry_date?: string }>({ user_id: "", category: "" });
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -39,11 +82,22 @@ export default function HRDashboard() {
   const [breakRules, setBreakRules] = useState<any[]>([]);
   const [newBreakRule, setNewBreakRule] = useState<{ name: string; minutes: number }>({ name: "", minutes: 60 });
   const [nowMs, setNowMs] = useState<number>(Date.now());
+  const [ceoMsgDraft, setCeoMsgDraft] = useState<string>("");
+  // Analytics
+  const [weeklyTrends, setWeeklyTrends] = useState<any[] | null>(null);
+  const [latenessHeatmap, setLatenessHeatmap] = useState<any[] | null>(null);
 
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setSessionUserId(session?.user?.id ?? null);
+      // derive a friendly name for greeting
+      try {
+        if (session?.user?.id) {
+          const { data: u } = await supabase.from("users").select("full_name, email").eq("id", session.user.id).maybeSingle();
+          setDisplayName(u?.full_name || session.user.user_metadata?.full_name || session.user.email || "");
+        }
+      } catch {}
       await Promise.all([
         refreshOverview(),
         refreshApprovals(),
@@ -52,8 +106,21 @@ export default function HRDashboard() {
         loadTeams(),
         loadWarnings(),
         loadSettingsData(),
+        loadWeeklyTrends(),
+        loadLatenessHeatmap(),
       ]);
     })();
+  }, []);
+
+  // Realtime: refresh overview when attendance_logs change
+  useEffect(() => {
+    const channel = supabase
+      .channel('realtime-attendance')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_logs' }, () => {
+        refreshOverview();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   // Tick every second for live timers in status list
@@ -78,6 +145,23 @@ export default function HRDashboard() {
       .select("*")
       .order("user_id", { ascending: true });
     if (!error) setInout(data ?? []);
+  }
+
+  // --- Analytics loaders (graceful fallback if views missing) ---
+  async function loadWeeklyTrends() {
+    try {
+      const { data, error } = await supabase.from("v_weekly_trends").select("*").limit(14);
+      if (!error) { setWeeklyTrends(data ?? []); return; }
+    } catch {}
+    setWeeklyTrends([]);
+  }
+
+  async function loadLatenessHeatmap() {
+    try {
+      const { data, error } = await supabase.from("v_lateness_heatmap").select("*").limit(500);
+      if (!error) { setLatenessHeatmap(data ?? []); return; }
+    } catch {}
+    setLatenessHeatmap([]);
   }
 
   // --- Punch In/Out for HR/CEO themselves ---
@@ -330,7 +414,16 @@ export default function HRDashboard() {
     <RoleGate allow={["hr", "ceo"]}>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">HR/CEO Dashboard</h1>
+          <h1 className="text-2xl font-semibold">
+            {role === 'ceo' ? (
+              <span className="inline-flex items-center gap-2">
+                <span className="text-xl">👑</span>
+                <span>Welcome, CEO {displayName || ""}</span>
+              </span>
+            ) : (
+              <span>Welcome, {displayName || "HR/CEO"}</span>
+            )}
+          </h1>
           {/* Quick Punch for HR/CEO */}
           <div className="flex items-center gap-2">
             <button
@@ -358,6 +451,66 @@ export default function HRDashboard() {
                 {goldMode ? "Gold On" : "Gold Off"}
               </button>
             )}
+
+        {/* Heatmaps Tab (read-only display for CEO/HR) */}
+        {tab === "reports" && (
+          <section className="rounded-lg border p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-lg font-medium">Heatmaps — Lateness & Overtime</h2>
+              <button onClick={loadLatenessHeatmap} className="text-xs text-brand-primary">Refresh</button>
+            </div>
+            {!latenessHeatmap || latenessHeatmap.length === 0 ? (
+              <p className="text-sm opacity-70">No heatmap data.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-md border">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b">
+                      {Object.keys(latenessHeatmap[0]).map((k)=> (
+                        <th key={k} className="py-2 px-2">{k}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {latenessHeatmap.map((row, i) => (
+                      <tr key={i} className="border-b last:border-b-0">
+                        {Object.values(row).map((v:any,j)=> (
+                          <td key={j} className="py-1 px-2">{String(v)}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* CEO Tab: Editor for CEO Message (moved below tabs) */}
+        {tab === "ceo" && role === "ceo" && (
+          <section className={`rounded-lg border p-4 ${goldMode ? 'border-[#D4AF37]/40' : ''}`}>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-medium">CEO Broadcast</h2>
+              <button onClick={loadCeoMessage} className="text-xs text-brand-primary">Load current</button>
+            </div>
+            <p className="mb-2 text-sm opacity-80">Write a message to appear on the home page and on everyone’s overview.</p>
+            <textarea
+              value={ceoMsgDraft}
+              onChange={(e) => setCeoMsgDraft(e.target.value)}
+              placeholder="Type your message to all staff..."
+              className="min-h-[140px] w-full rounded-md border p-3"
+            />
+            <div className="mt-3 flex items-center gap-2">
+              <button onClick={saveCeoMessage} className={`rounded-md px-4 py-2 text-white ${goldMode ? 'bg-[#D4AF37] text-black' : 'bg-brand-primary'}`}>Save Broadcast</button>
+              {okMsg && <span className="text-sm text-emerald-600">{okMsg}</span>}
+              {err && <span className="text-sm text-rose-600">{err}</span>}
+            </div>
+            <div className="mt-4">
+              <h3 className="mb-1 text-sm font-semibold">Preview</h3>
+              <CEOBroadcast />
+            </div>
+          </section>
+        )}
           </div>
         </div>
 
@@ -376,11 +529,20 @@ export default function HRDashboard() {
           )}
         </nav>
 
+        {/* CEO Broadcast placed globally below tabs */}
+        <section className={`rounded-xl border p-4 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30' : 'border-brand-primary/20'}`}>
+          <CEOBroadcast />
+        </section>
+
         {/* Overview Tab */}
         {tab === "overview" && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <section className={`rounded-xl border p-4 shadow-md hover:shadow-xl transition-all duration-300 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30 dark:border-[#D4AF37]/20' : 'border-brand-primary/20 dark:border-brand.light/10'}`}>
-            <h2 className="mb-2 text-lg font-medium">Overview</h2>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {/* Executive Snapshot + Status */}
+          <section className={`rounded-xl border p-4 shadow-md hover:shadow-xl transition-all duration-300 lg:col-span-2 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30 dark:border-[#D4AF37]/20' : 'border-brand-primary/20 dark:border-brand.light/10'}`}>
+            <div className="flex items-center justify-between">
+              <h2 className="mb-2 text-lg font-medium">Overview</h2>
+              <button onClick={refreshOverview} className="text-xs text-brand-primary">Refresh</button>
+            </div>
             <CEOSnapshot />
             <div className="mt-4">
               <h3 className="mb-2 text-sm font-semibold">Current Status</h3>
@@ -391,13 +553,44 @@ export default function HRDashboard() {
                       <span>{r.user_name ?? r.full_name ?? r.user_id}</span>
                       <span className="opacity-70">
                         {r.status ?? r.last_event ?? "—"}
-                        {r.last_ts ? ` · ${fmtDuration(Math.max(0, nowMs - new Date(r.last_ts).getTime()))}` : ""}
+                        {(() => {
+                          const s = (r.status ?? r.last_event ?? "")?.toString().toLowerCase();
+                          const onClock = ["present", "working", "checked_in", "in"].includes(s) || (r.last_event === "check_in");
+                          if (!onClock) return "";
+                          return r.last_ts ? ` · ${fmtDuration(Math.max(0, nowMs - new Date(r.last_ts).getTime()))}` : "";
+                        })()}
                       </span>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
+          </section>
+
+          {/* Weekly Trends (cards + simple bars) */}
+          <section className={`rounded-xl border p-4 shadow-md transition-all duration-300 lg:col-span-1 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30' : 'border-brand-primary/20'}`}>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-lg font-medium">Weekly Trends</h2>
+              <button onClick={loadWeeklyTrends} className="text-xs text-brand-primary">Refresh</button>
+            </div>
+            {!weeklyTrends || weeklyTrends.length === 0 ? (
+              <p className="text-sm opacity-70">No trend data.</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {weeklyTrends.slice(0,6).map((r:any,i:number)=>{
+                  const pct = Math.max(0, Math.min(100, Math.round(Number(r.attendance_pct ?? r.pct ?? 0))));
+                  const label = r.label ?? r.day ?? r.week ?? `#${i+1}`;
+                  return (
+                    <li key={i} className="grid grid-cols-5 items-center gap-2">
+                      <span className="col-span-2 truncate">{label}</span>
+                      <div className="col-span-3 h-2 rounded bg-black/10 dark:bg-white/10 overflow-hidden">
+                        <div className="h-full bg-emerald-500" style={{width: pct + '%'}} />
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </section>
         </div>
         )}
@@ -464,7 +657,10 @@ export default function HRDashboard() {
           {/* Staff Admin */}
           {tab === "staff" && (
           <section className="rounded-lg border p-4">
-            <h2 className="mb-2 text-lg font-medium">Staff Admin</h2>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-lg font-medium">Staff Admin</h2>
+              <button onClick={refreshUserRoles} className="rounded-md border px-2 py-1 text-xs">Refresh Roles</button>
+            </div>
             <form onSubmit={createBasicUser} className="mb-3 flex flex-wrap items-end gap-2 text-sm">
               <div>
                 <label className="mb-1 block text-xs">Email</label>
@@ -500,7 +696,7 @@ export default function HRDashboard() {
                     <tr key={u.id} className="border-b last:border-b-0">
                       <td className="py-2">{u.full_name ?? u.id}</td>
                       <td className="py-2">{u.email ?? "—"}</td>
-                      <td className="py-2">{u.role}</td>
+                      <td className="py-2">{userRolesMap[u.id] ?? u.role}</td>
                       <td className="py-2">
                         <select value={u.job_title_id ?? ""} onChange={(e) => updateUserJobShift(u.id, { job_title_id: e.target.value || null })} className="rounded-md border px-2 py-1 text-xs min-w-[160px]">
                           <option value="">—</option>
@@ -514,7 +710,7 @@ export default function HRDashboard() {
                         </select>
                       </td>
                       <td className="py-2">
-                        <select value={u.role} onChange={(e) => updateUserRole(u.id, e.target.value)} className="rounded-md border px-2 py-1 text-xs">
+                        <select value={userRolesMap[u.id] ?? u.role} onChange={(e) => updateUserRoleCentral(u.id, e.target.value)} className="rounded-md border px-2 py-1 text-xs">
                           <option value="staff">staff</option>
                           <option value="assistant_manager">assistant_manager</option>
                           <option value="manager">manager</option>

@@ -6,6 +6,8 @@ import { supabase } from "@/lib/supabaseClient";
 export default function AutoRedirectDashboard() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const redirected = (globalThis as any).__adeer_redirected ?? { current: false };
+  (globalThis as any).__adeer_redirected = redirected;
 
   useEffect(() => {
     let active = true;
@@ -27,45 +29,51 @@ export default function AutoRedirectDashboard() {
           return;
         }
 
-        // Get user role
-        const { data: userProfile, error: profileError } = await supabase
-          .from("users")
-          .select("role")
-          .eq("id", session.user.id)
-          .single();
+        // Robust role fetch via RPC to avoid RLS race
+        let role: string | null = null;
+        let attempts = 0;
+        while (active && attempts < 4 && !role) {
+          const { data, error } = await supabase.rpc('fn_current_role');
+          if (error) {
+            console.warn('AutoRedirectDashboard: rpc role error', error);
+          }
+          role = (data as string | null) ?? null;
+          if (!role) {
+            await new Promise((r) => setTimeout(r, 50 + attempts * attempts * 50));
+          }
+          attempts++;
+        }
 
         if (!active) return;
 
-        if (profileError) {
-          console.error("Profile error:", profileError);
-          // Create default profile if none exists
-          if ((profileError as any).code === 'PGRST116') {
-            const { error: insertError } = await supabase
-              .from("users")
-              .insert({
-                id: session.user.id,
-                email: session.user.email,
-                role: "staff"
-              });
-            
-            if (!insertError) {
-              router.replace("/staff");
-              return;
-            }
+        console.log("User role:", role);
+
+        if (!role) {
+          // Fallback: try legacy source public.users once to avoid null loops
+          try {
+            const { data: legacy, error: legacyErr } = await supabase
+              .from('users')
+              .select('role')
+              .eq('id', session.user.id)
+              .maybeSingle();
+            if (legacyErr) console.warn('AutoRedirectDashboard: legacy role error', legacyErr);
+            role = (legacy?.role as string | undefined) ?? null;
+          } catch {}
+          if (!role) {
+            setLoading(false);
+            return;
           }
-          router.replace("/login");
-          return;
         }
 
-        const role = (userProfile as any).role;
-        if (role === "hr" || role === "ceo") {
-          router.replace("/hr");
-        } else if (role === "manager" || role === "assistant_manager") {
-          router.replace("/manager");
-        } else if (role === "staff") {
-          router.replace("/staff");
-        } else {
-          router.replace("/staff"); // Default fallback
+        if (!redirected.current) {
+          redirected.current = true;
+          if (role === "hr" || role === "ceo") {
+            router.replace("/hr");
+          } else if (role === "manager" || role === "assistant_manager") {
+            router.replace("/manager");
+          } else {
+            router.replace("/staff");
+          }
         }
       } catch (error) {
         console.error("Auth check failed:", error);

@@ -1,13 +1,9 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
-import Image from "next/image";
-import Link from "next/link";
-import HeaderBadges from "@/components/HeaderBadges";
 import { ThemeProvider } from "next-themes";
-import ThemeToggle from "@/components/ThemeToggle";
 import PWARegister from "@/components/PWARegister";
-import LogoutButton from "@/components/LogoutButton";
+import ConditionalHeader from "@/components/ConditionalHeader";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -28,20 +24,7 @@ export default function RootLayout({
       <body className={`${inter.className} min-h-dvh bg-[var(--background)] text-[var(--foreground)]`}>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <PWARegister />
-          <header className="sticky top-0 z-20 border-b border-black/5 bg-white/60 backdrop-blur supports-[backdrop-filter]:bg-white/50 dark:border-white/10 dark:bg-black/40">
-            <div className="container-app flex items-center justify-between gap-3 py-3">
-              <Link href="/" className="flex items-center gap-3">
-                <Image src="/logo/adeer logo.png" alt="Adeer HR" width={36} height={36} />
-                <span className="text-lg font-semibold tracking-tight">Adeer HR</span>
-              </Link>
-
-              <div id="header-actions" className="flex items-center gap-3">
-                <HeaderBadges />
-                <LogoutButton />
-                <ThemeToggle />
-              </div>
-            </div>
-          </header>
+          <ConditionalHeader />
           <main className="container-app py-8 md:py-10">{children}</main>
         </ThemeProvider>
       </body>
