@@ -2,6 +2,8 @@
 import RoleGate from "@/components/RoleGate";
 import CEOSnapshot from "@/components/CEOSnapshot";
 import CEOBroadcast from "@/components/CEOBroadcast";
+import StaffCard from "@/components/staff/StaffCard";
+import StaffDetailsModal from "@/components/staff/StaffDetailsModal";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useUserRole } from "@/hooks/useUserRole";
@@ -9,7 +11,7 @@ import { useUserRole } from "@/hooks/useUserRole";
 export default function HRDashboard() {
   const { role } = useUserRole();
   const [goldMode, setGoldMode] = useState(false);
-  const [tab, setTab] = useState<"overview" | "approvals" | "staff" | "settings" | "teams" | "folders" | "reports" | "warnings" | "ceo">("overview");
+  const [tab, setTab] = useState<"overview" | "approvals" | "staff" | "settings" | "teams" | "folders" | "reports" | "warnings" | "ceo" | "cards">("overview");
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState<string>("");
   const [punchLoading, setPunchLoading] = useState(false);
@@ -33,18 +35,6 @@ export default function HRDashboard() {
       }
     })();
   }, []);
-
-  // --- CEO message editor helpers (CEO only) ---
-  async function loadCeoMessage() {
-    const { data } = await supabase.from("company_settings").select("value").eq("key", "ceo_message").maybeSingle();
-    setCeoMsgDraft((data?.value as string | undefined) ?? "");
-  }
-
-  async function saveCeoMessage() {
-    setOkMsg(null); setErr(null);
-    const { error } = await supabase.from("company_settings").upsert({ key: "ceo_message", value: ceoMsgDraft }, { onConflict: "key" });
-    if (error) setErr(error.message); else setOkMsg("CEO message saved.");
-  }
 
   async function refreshUserRoles() {
     const { data, error } = await supabase.from('user_roles').select('user_id, role');
@@ -72,15 +62,25 @@ export default function HRDashboard() {
   const [managerUserId, setManagerUserId] = useState("");
   const [managerTeamId, setManagerTeamId] = useState("");
   const [warnings, setWarnings] = useState<any[]>([]);
+  // Staff Cards consolidated view
+  const [staffCards, setStaffCards] = useState<any[] | null>(null);
   // HR Settings data
   const [jobTitles, setJobTitles] = useState<any[]>([]);
   const [newJobTitle, setNewJobTitle] = useState("");
   const [shifts, setShifts] = useState<any[]>([]);
   const [newShift, setNewShift] = useState<{ name: string; duration_minutes: number; start_time?: string; end_time?: string }>({ name: "", duration_minutes: 480 });
   const [holidays, setHolidays] = useState<any[]>([]);
-  const [newHoliday, setNewHoliday] = useState<{ day: string; name?: string }>({ day: "", name: "" });
+  const [newHoliday, setNewHoliday] = useState<{ date: string; name?: string; recurring?: boolean }>({ date: "", name: "", recurring: false });
   const [breakRules, setBreakRules] = useState<any[]>([]);
   const [newBreakRule, setNewBreakRule] = useState<{ name: string; minutes: number }>({ name: "", minutes: 60 });
+  // Staff details modal
+  const [openStaffModal, setOpenStaffModal] = useState(false);
+  const [activeStaff, setActiveStaff] = useState<any | null>(null);
+  // Inline edit state (Job Titles & Shifts)
+  const [editingJobTitleId, setEditingJobTitleId] = useState<string | null>(null);
+  const [editingJobTitleName, setEditingJobTitleName] = useState<string>("");
+  const [editingShiftId, setEditingShiftId] = useState<string | null>(null);
+  const [editingShift, setEditingShift] = useState<{ name: string; duration_minutes: number; start_time?: string; end_time?: string }>({ name: "", duration_minutes: 480 });
   const [nowMs, setNowMs] = useState<number>(Date.now());
   const [ceoMsgDraft, setCeoMsgDraft] = useState<string>("");
   // Analytics
@@ -98,17 +98,10 @@ export default function HRDashboard() {
           setDisplayName(u?.full_name || session.user.user_metadata?.full_name || session.user.email || "");
         }
       } catch {}
-      await Promise.all([
-        refreshOverview(),
-        refreshApprovals(),
-        refreshUsers(),
-        loadBranding(),
-        loadTeams(),
-        loadWarnings(),
-        loadSettingsData(),
-        loadWeeklyTrends(),
-        loadLatenessHeatmap(),
-      ]);
+      // Initial load for the default tab and global data
+      await refreshOverview();
+      await loadBranding();
+      await loadWeeklyTrends();
     })();
   }, []);
 
@@ -122,6 +115,57 @@ export default function HRDashboard() {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
+
+  // Realtime: refresh settings lists when any settings table changes
+  useEffect(() => {
+    const settingsChannel = supabase
+      .channel('realtime-settings')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'job_titles' }, () => { if (tab === 'settings') loadSettingsData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shifts' }, () => { if (tab === 'settings') loadSettingsData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'holidays' }, () => { if (tab === 'settings') loadSettingsData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'break_rules' }, () => { if (tab === 'settings') loadSettingsData(); })
+      .subscribe();
+    return () => { supabase.removeChannel(settingsChannel); };
+  }, [tab]);
+
+  // Realtime: refresh cards on related table changes when on Cards tab
+  useEffect(() => {
+    if (tab !== 'cards') return;
+    const cardsChannel = supabase
+      .channel('realtime-cards')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'staff_files' }, () => { loadStaffCardsData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'warnings' }, () => { loadStaffCardsData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'staff_cards' }, () => { loadStaffCardsData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_logs' }, () => { loadStaffCardsData(); })
+      .subscribe();
+    return () => { supabase.removeChannel(cardsChannel); };
+  }, [tab]);
+
+  // Realtime: refresh teams when teams-related tables change
+  useEffect(() => {
+    if (tab !== 'teams') return;
+    const teamsChannel = supabase
+      .channel('realtime-teams')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'teams' }, () => { loadTeams(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'team_members' }, () => { /* could enhance UI later */ })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'team_managers' }, () => { /* could enhance UI later */ })
+      .subscribe();
+    return () => { supabase.removeChannel(teamsChannel); };
+  }, [tab]);
+
+  // Fetch data when tab changes
+  useEffect(() => {
+    if (tab === "approvals") refreshApprovals();
+    if (tab === "staff") refreshUsers();
+    if (tab === "teams") loadTeams();
+    if (tab === "warnings") loadWarnings();
+    if (tab === "settings") loadSettingsData();
+    if (tab === "cards") loadStaffCardsData();
+    if (tab === "reports") {
+      loadLatenessHeatmap();
+      loadWeeklyTrends();
+    }
+  }, [tab]);
 
   // Tick every second for live timers in status list
   useEffect(() => {
@@ -215,8 +259,8 @@ export default function HRDashboard() {
   }
 
   async function loadBranding() {
-    // Be defensive: select all and try to derive key/value pairs regardless of column names
-    const { data } = await supabase.from("company_settings").select("*");
+    // Be defensive: select only the possible columns to derive key/value pairs
+    const { data } = await supabase.from("company_settings").select("key,value,setting_key,setting_value,name,val");
     const map: any = {};
     (data ?? []).forEach((r: any) => {
       const k = r.key ?? r.setting_key ?? r.name ?? null;
@@ -228,7 +272,7 @@ export default function HRDashboard() {
 
   async function setBrandSetting(key: string, value: string) {
     setOkMsg(null); setErr(null);
-    const { error } = await supabase.from("company_settings").upsert({ key, value }, { onConflict: "key" });
+    const { error } = await supabase.from("company_settings").upsert({ setting_key: key, setting_value: value }, { onConflict: "setting_key" });
     if (error) { setErr(error.message); } else { setOkMsg("Branding saved."); await loadBranding(); }
   }
 
@@ -343,6 +387,53 @@ export default function HRDashboard() {
     exportCSV("absence_last_30_days.csv", data ?? []);
   }
 
+  // --- Staff Cards consolidated loader (top-level) ---
+  async function loadStaffCardsData() {
+    try {
+      const [usersRes, filesRes, warnsRes, statusRes, cardsRes] = await Promise.all([
+        supabase.from("users").select("id,email,full_name").order("email"),
+        supabase.from("staff_files").select("user_id"),
+        supabase.from("warnings").select("user_id"),
+        supabase.from("v_current_status").select("user_id,status,last_event,last_ts"),
+        supabase.from("staff_cards").select("user_id,card_url,created_at")
+      ]);
+      const users = usersRes.data ?? [];
+      const files = filesRes.data ?? [];
+      const warns = warnsRes.data ?? [];
+      const stats = statusRes.data ?? [];
+      const cards = cardsRes.data ?? [];
+      const fileCount: Record<string, number> = {};
+      files.forEach((r: any) => { fileCount[r.user_id] = (fileCount[r.user_id] || 0) + 1; });
+      const warnCount: Record<string, number> = {};
+      warns.forEach((r: any) => { warnCount[r.user_id] = (warnCount[r.user_id] || 0) + 1; });
+      const statusMap: Record<string, any> = {};
+      stats.forEach((r: any) => { statusMap[r.user_id] = r; });
+      const cardMap: Record<string, any> = {};
+      cards.forEach((r: any) => { cardMap[r.user_id] = r; });
+      const merged = users.map((u: any) => {
+        const st = statusMap[u.id] || {};
+        const s = (st.status ?? st.last_event ?? "")?.toString().toLowerCase();
+        const onClock = ["present", "working", "checked_in", "in"].includes(s) || (st.last_event === "check_in");
+        return {
+          user_id: u.id,
+          name: u.full_name || u.email || u.id,
+          email: u.email,
+          docs_count: fileCount[u.id] || 0,
+          warnings_count: warnCount[u.id] || 0,
+          status: st.status ?? st.last_event ?? "—",
+          last_ts: st.last_ts ?? null,
+          onClock,
+          has_card: !!cardMap[u.id],
+          card_url: cardMap[u.id]?.card_url || null,
+        };
+      });
+      setStaffCards(merged);
+    } catch (e) {
+      console.error("[cards] loadStaffCardsData failed", e);
+      setStaffCards([]);
+    }
+  }
+
   async function updateUserRole(userId: string, role: string) {
     setOkMsg(null); setErr(null);
     const { error } = await supabase.from("users").update({ role }).eq("id", userId);
@@ -356,8 +447,16 @@ export default function HRDashboard() {
   }
   async function createTeam() {
     if (!teamName.trim()) return;
-    const { error } = await supabase.from("teams").insert({ name: teamName.trim() });
-    if (error) { setErr(error.message); } else { setTeamName(""); await loadTeams(); setOkMsg("Team created."); }
+    const name = teamName.trim();
+    // Return inserted row and update UI immediately
+    const { data, error } = await supabase.from("teams").insert({ name }).select("id,name").single();
+    if (error) {
+      setErr(error.message);
+    } else {
+      setTeamName("");
+      setTeams((prev)=> prev && Array.isArray(prev) ? [...prev, data as any] : [data as any]);
+      setOkMsg("Team created.");
+    }
   }
   async function assignMember() {
     if (!memberTeamId || !memberUserId) return;
@@ -378,36 +477,183 @@ export default function HRDashboard() {
 
   // --- HR Settings data loaders ---
   async function loadSettingsData() {
-    const [{ data: jt }, { data: sh }, { data: hol }, { data: br }] = await Promise.all([
-      supabase.from("job_titles").select("*").order("name"),
-      supabase.from("shifts").select("*").order("name"),
-      supabase.from("holidays").select("*").order("day"),
-      supabase.from("break_rules").select("*").order("name"),
-    ]);
-    setJobTitles(jt ?? []);
-    setShifts(sh ?? []);
-    setHolidays(hol ?? []);
-    setBreakRules(br ?? []);
+    try {
+      const res = await Promise.all([
+        supabase.from("job_titles").select("*").order("name"),
+        supabase.from("shifts").select("*").order("name"),
+        supabase.from("holidays").select("*").order("date"),
+        supabase.from("break_rules").select("*").order("name"),
+      ]);
+      if (res[0].data) setJobTitles(res[0].data);
+      if (res[1].data) setShifts(res[1].data);
+      if (res[2].data) setHolidays(res[2].data);
+      if (res[3].data) setBreakRules(res[3].data);
+      // Log any errors without crashing
+      res.forEach((r, i) => {
+        if (r.error) console.warn(`[settings] Promise.all[${i}] error:`, r.error);
+      });
+    } catch (e) {
+      console.error("[settings] loadSettingsData failed:", e);
+    }
   }
   async function addJobTitle() {
     if (!newJobTitle.trim()) return;
-    const { error } = await supabase.from("job_titles").insert({ name: newJobTitle.trim() });
-    if (error) setErr(error.message); else { setNewJobTitle(""); setOkMsg("Job title added."); await loadSettingsData(); }
+    const name = newJobTitle.trim();
+    const { data, error } = await supabase
+      .from("job_titles")
+      .insert({ name })
+      .select("*")
+      .single();
+    if (error) {
+      setErr(error.message);
+    } else {
+      setNewJobTitle("");
+      setOkMsg("Job title added.");
+      setJobTitles((list: any[] = []) => [...list, (data as any)]);
+    }
   }
   async function addShift() {
     if (!newShift.name.trim() || !newShift.duration_minutes) return;
-    const { error } = await supabase.from("shifts").insert(newShift);
-    if (error) setErr(error.message); else { setNewShift({ name: "", duration_minutes: 480 }); setOkMsg("Shift added."); await loadSettingsData(); }
+    // If start_time provided and end_time missing, auto-calc end from hours
+    let payload: any = { ...newShift };
+    if (payload.start_time && !payload.end_time) {
+      const end = computeEndFromStart(payload.start_time, payload.duration_minutes);
+      payload.end_time = end;
+    }
+    const { data, error } = await supabase
+      .from("shifts")
+      .insert(payload)
+      .select("*")
+      .single();
+    if (error) {
+      setErr(error.message);
+    } else {
+      setNewShift({ name: "", duration_minutes: 480 });
+      setOkMsg("Shift added.");
+      setShifts((list: any[] = []) => [...list, (data as any)]);
+    }
   }
   async function addHoliday() {
-    if (!newHoliday.day) return;
-    const { error } = await supabase.from("holidays").insert(newHoliday);
-    if (error) setErr(error.message); else { setNewHoliday({ day: "", name: "" }); setOkMsg("Holiday added."); await loadSettingsData(); }
+    if (!newHoliday.date) return;
+    const payload: any = { date: newHoliday.date, name: newHoliday.name || null, recurring: newHoliday.recurring ?? false };
+    const { data, error } = await supabase
+      .from("holidays")
+      .insert(payload)
+      .select("*")
+      .single();
+    if (error) {
+      setErr(error.message);
+    } else {
+      setNewHoliday({ date: "", name: "", recurring: false });
+      setOkMsg("Holiday added.");
+      setHolidays((list: any[] = []) => [...list, (data as any)]);
+    }
+  }
+
+  // Delete helpers
+  async function deleteJobTitle(id: string) {
+    if (!confirm('Delete this job title?')) return;
+    const { error } = await supabase.from('job_titles').delete().eq('id', id);
+    if (error) setErr(error.message); else {
+      setOkMsg('Job title deleted.');
+      setJobTitles((list) => list.filter((jt: any) => jt.id !== id));
+    }
+  }
+  async function deleteShift(id: string) {
+    if (!confirm('Delete this shift?')) return;
+    const { error } = await supabase.from('shifts').delete().eq('id', id);
+    if (error) setErr(error.message); else {
+      setOkMsg('Shift deleted.');
+      setShifts((list) => list.filter((sh: any) => sh.id !== id));
+    }
+  }
+  async function deleteHoliday(dateStr: string) {
+    if (!confirm('Delete this holiday?')) return;
+    const { error } = await supabase.from('holidays').delete().eq('date', dateStr);
+    if (error) setErr(error.message); else {
+      setOkMsg('Holiday deleted.');
+      setHolidays((list) => list.filter((h: any) => (h.date ?? h.day) !== dateStr));
+    }
+  }
+  async function deleteBreakRule(id: string) {
+    if (!confirm('Delete this break rule?')) return;
+    const { error } = await supabase.from('break_rules').delete().eq('id', id);
+    if (error) setErr(error.message); else {
+      setOkMsg('Break rule deleted.');
+      setBreakRules((list) => list.filter((b: any) => b.id !== id));
+    }
   }
   async function addBreakRule() {
     if (!newBreakRule.name.trim()) return;
     const { error } = await supabase.from("break_rules").insert(newBreakRule);
     if (error) setErr(error.message); else { setNewBreakRule({ name: "", minutes: 60 }); setOkMsg("Break rule added."); await loadSettingsData(); }
+  }
+
+  // Helper: compute end time as HH:MM from start HH:MM plus duration minutes (wrap 24h)
+  function computeEndFromStart(startHHMM: string, durationMin: number): string {
+    const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(startHHMM);
+    if (!m) return startHHMM;
+    const h = Math.max(0, Math.min(23, parseInt(m[1], 10)));
+    const min = Math.max(0, Math.min(59, parseInt(m[2], 10)));
+    const startTotal = h * 60 + min;
+    const endTotal = (startTotal + (durationMin || 0)) % (24 * 60);
+    const eh = Math.floor(endTotal / 60).toString().padStart(2, '0');
+    const em = Math.floor(endTotal % 60).toString().padStart(2, '0');
+    return `${eh}:${em}`;
+  }
+
+  // Inline edit handlers — Job Titles
+  function startEditJobTitle(jt: any) {
+    setEditingJobTitleId(jt.id);
+    setEditingJobTitleName(jt.name || "");
+  }
+  function cancelEditJobTitle() {
+    setEditingJobTitleId(null);
+    setEditingJobTitleName("");
+  }
+  async function saveEditJobTitle() {
+    if (!editingJobTitleId) return;
+    const name = editingJobTitleName.trim();
+    if (!name) { setErr('Name is required'); return; }
+    const { error } = await supabase.from('job_titles').update({ name }).eq('id', editingJobTitleId);
+    if (error) setErr(error.message); else {
+      setOkMsg('Job title updated.');
+      setJobTitles((list: any[]) => list.map((jt: any) => jt.id === editingJobTitleId ? { ...jt, name } : jt));
+      setEditingJobTitleId(null);
+      setEditingJobTitleName("");
+    }
+  }
+
+  // Inline edit handlers — Shifts
+  function startEditShift(sh: any) {
+    setEditingShiftId(sh.id);
+    setEditingShift({
+      name: sh.name || "",
+      duration_minutes: Number(sh.duration_minutes || 0),
+      start_time: sh.start_time || "",
+      end_time: sh.end_time || "",
+    });
+  }
+  function cancelEditShift() {
+    setEditingShiftId(null);
+    setEditingShift({ name: "", duration_minutes: 480 });
+  }
+  async function saveEditShift() {
+    if (!editingShiftId) return;
+    const payload: any = {
+      name: (editingShift.name || '').trim(),
+      duration_minutes: editingShift.duration_minutes,
+      start_time: editingShift.start_time || null,
+      end_time: editingShift.end_time || null,
+    };
+    if (!payload.name || !payload.duration_minutes) { setErr('Shift name and duration are required'); return; }
+    const { error } = await supabase.from('shifts').update(payload).eq('id', editingShiftId);
+    if (error) setErr(error.message); else {
+      setOkMsg('Shift updated.');
+      setShifts((list: any[]) => list.map((sh: any) => sh.id === editingShiftId ? { ...sh, ...payload } : sh));
+      setEditingShiftId(null);
+      setEditingShift({ name: "", duration_minutes: 480 });
+    }
   }
 
   return (
@@ -420,122 +666,38 @@ export default function HRDashboard() {
                 <span className="text-xl">👑</span>
                 <span>Welcome, CEO {displayName || ""}</span>
               </span>
-            ) : (
+              ) : (
               <span>Welcome, {displayName || "HR/CEO"}</span>
             )}
+
           </h1>
-          {/* Quick Punch for HR/CEO */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => logAttendance("check_in")}
-              disabled={punchLoading || !sessionUserId}
-              className="rounded-md bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-50"
-              title="Punch In"
-            >
-              Punch In
-            </button>
-            <button
-              onClick={() => logAttendance("check_out")}
-              disabled={punchLoading || !sessionUserId}
-              className="rounded-md bg-rose-600 px-3 py-1.5 text-white disabled:opacity-50"
-              title="Punch Out"
-            >
-              Punch Out
-            </button>
-            {role === "ceo" && (
-              <button
-                onClick={() => setGoldMode((v) => !v)}
-                className={`rounded-md px-3 py-1.5 text-sm transition-all duration-200 ${goldMode ? "bg-[#D4AF37] text-black shadow-[0_0_16px_rgba(212,175,55,0.55)]" : "border border-[#D4AF37]/60 text-[#D4AF37] hover:bg-[#D4AF37]/10"}`}
-                title="Toggle CEO Gold Theme"
-              >
-                {goldMode ? "Gold On" : "Gold Off"}
-              </button>
-            )}
 
-        {/* Heatmaps Tab (read-only display for CEO/HR) */}
-        {tab === "reports" && (
-          <section className="rounded-lg border p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-lg font-medium">Heatmaps — Lateness & Overtime</h2>
-              <button onClick={loadLatenessHeatmap} className="text-xs text-brand-primary">Refresh</button>
-            </div>
-            {!latenessHeatmap || latenessHeatmap.length === 0 ? (
-              <p className="text-sm opacity-70">No heatmap data.</p>
-            ) : (
-              <div className="overflow-x-auto rounded-md border">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="border-b">
-                      {Object.keys(latenessHeatmap[0]).map((k)=> (
-                        <th key={k} className="py-2 px-2">{k}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {latenessHeatmap.map((row, i) => (
-                      <tr key={i} className="border-b last:border-b-0">
-                        {Object.values(row).map((v:any,j)=> (
-                          <td key={j} className="py-1 px-2">{String(v)}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        )}
 
-        {/* CEO Tab: Editor for CEO Message (moved below tabs) */}
-        {tab === "ceo" && role === "ceo" && (
-          <section className={`rounded-lg border p-4 ${goldMode ? 'border-[#D4AF37]/40' : ''}`}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-medium">CEO Broadcast</h2>
-              <button onClick={loadCeoMessage} className="text-xs text-brand-primary">Load current</button>
-            </div>
-            <p className="mb-2 text-sm opacity-80">Write a message to appear on the home page and on everyone’s overview.</p>
-            <textarea
-              value={ceoMsgDraft}
-              onChange={(e) => setCeoMsgDraft(e.target.value)}
-              placeholder="Type your message to all staff..."
-              className="min-h-[140px] w-full rounded-md border p-3"
-            />
-            <div className="mt-3 flex items-center gap-2">
-              <button onClick={saveCeoMessage} className={`rounded-md px-4 py-2 text-white ${goldMode ? 'bg-[#D4AF37] text-black' : 'bg-brand-primary'}`}>Save Broadcast</button>
-              {okMsg && <span className="text-sm text-emerald-600">{okMsg}</span>}
-              {err && <span className="text-sm text-rose-600">{err}</span>}
-            </div>
-            <div className="mt-4">
-              <h3 className="mb-1 text-sm font-semibold">Preview</h3>
-              <CEOBroadcast />
-            </div>
-          </section>
-        )}
           </div>
-        </div>
 
         {/* Tabs */}
         <nav className={`flex gap-2 overflow-x-auto rounded-lg border p-1 text-sm backdrop-blur supports-[backdrop-filter]:backdrop-blur-md ${goldMode && role === 'ceo' ? 'bg-[#1a1400]/40 border-[#D4AF37]/30' : 'bg-white/60 dark:bg-black/20 border-brand-primary/20'}`} aria-label="Sections">
           <button onClick={() => setTab("overview")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "overview" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Overview</button>
           <button onClick={() => setTab("approvals")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "approvals" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Approvals</button>
           <button onClick={() => setTab("staff")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "staff" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Staff Admin</button>
+          <button onClick={() => setTab("cards")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "cards" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Staff Cards</button>
           <button onClick={() => setTab("settings")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "settings" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Settings</button>
           <button onClick={() => setTab("teams")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "teams" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Teams</button>
           <button onClick={() => setTab("folders")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "folders" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>HR Folders</button>
           <button onClick={() => setTab("reports")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "reports" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Reports</button>
           <button onClick={() => setTab("warnings")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "warnings" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Warnings</button>
-          {role === "ceo" && (
-            <button onClick={() => setTab("ceo")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "ceo" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>CEO</button>
-          )}
         </nav>
 
-        {/* CEO Broadcast placed globally below tabs */}
+        
+
+        {/* Overview Tab */}
+        {tab === "overview" && (
+        <>
+        {/* CEO Broadcast in its own section (outside the Overview grid) */}
         <section className={`rounded-xl border p-4 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30' : 'border-brand-primary/20'}`}>
           <CEOBroadcast />
         </section>
 
-        {/* Overview Tab */}
-        {tab === "overview" && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* Executive Snapshot + Status */}
           <section className={`rounded-xl border p-4 shadow-md hover:shadow-xl transition-all duration-300 lg:col-span-2 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30 dark:border-[#D4AF37]/20' : 'border-brand-primary/20 dark:border-brand.light/10'}`}>
@@ -548,20 +710,21 @@ export default function HRDashboard() {
               <h3 className="mb-2 text-sm font-semibold">Current Status</h3>
               {inout.length === 0 ? <p className="text-sm opacity-70">No data.</p> : (
                 <ul className="text-sm">
-                  {inout.slice(0, 12).map((r: any) => (
-                    <li key={r.user_id} className="flex justify-between border-b py-1 last:border-b-0">
-                      <span>{r.user_name ?? r.full_name ?? r.user_id}</span>
-                      <span className="opacity-70">
-                        {r.status ?? r.last_event ?? "—"}
-                        {(() => {
-                          const s = (r.status ?? r.last_event ?? "")?.toString().toLowerCase();
-                          const onClock = ["present", "working", "checked_in", "in"].includes(s) || (r.last_event === "check_in");
-                          if (!onClock) return "";
-                          return r.last_ts ? ` · ${fmtDuration(Math.max(0, nowMs - new Date(r.last_ts).getTime()))}` : "";
-                        })()}
-                      </span>
-                    </li>
-                  ))}
+                  {inout.slice(0, 12).map((r: any) => {
+                    const s = (r.status ?? r.last_event ?? "")?.toString().toLowerCase();
+                    const onClock = ["present", "working", "checked_in", "in"].includes(s) || (r.last_event === "check_in");
+                    const nameColor = onClock ? "text-emerald-300 drop-shadow-[0_0_6px_rgba(16,185,129,0.45)]" : "text-rose-300 drop-shadow-[0_0_6px_rgba(244,63,94,0.45)]";
+                    const statusColor = onClock ? "text-emerald-400" : "text-rose-400";
+                    const timerText = onClock && r.last_ts ? ` · ${fmtDuration(Math.max(0, nowMs - new Date(r.last_ts).getTime()))}` : "";
+                    return (
+                      <li key={r.user_id} className="flex items-center justify-between py-1">
+                        <span className={nameColor}>{r.user_name ?? r.full_name ?? r.user_id}</span>
+                        <span className={`opacity-90 ${statusColor}`}>
+                          {(r.status ?? r.last_event ?? "—") + timerText}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -593,6 +756,7 @@ export default function HRDashboard() {
             )}
           </section>
         </div>
+        </>
         )}
 
         {/* Approvals Tab */}
@@ -731,20 +895,6 @@ export default function HRDashboard() {
           <section className="rounded-lg border p-4">
             <h2 className="mb-2 text-lg font-medium">Settings</h2>
             <div className="space-y-3 text-sm">
-              <div className="flex items-end gap-2">
-                <div>
-                  <label className="mb-1 block text-xs">Brand Color</label>
-                  <input value={brand.color ?? ""} onChange={(e) => setBrand((s) => ({ ...s, color: e.target.value }))} placeholder="#4D6BF1" className="rounded-md border px-3 py-2" />
-                </div>
-                <button onClick={() => setBrandSetting("brand_color", brand.color ?? "")} className="rounded-md bg-brand-primary px-3 py-2 text-white">Save</button>
-              </div>
-              <div className="flex items-end gap-2">
-                <div>
-                  <label className="mb-1 block text-xs">Brand Logo URL</label>
-                  <input value={brand.logo_url ?? ""} onChange={(e) => setBrand((s) => ({ ...s, logo_url: e.target.value }))} placeholder="https://…" className="min-w-[300px] rounded-md border px-3 py-2" />
-                </div>
-                <button onClick={() => setBrandSetting("brand_logo_url", brand.logo_url ?? "")} className="rounded-md bg-brand-primary px-3 py-2 text-white">Save</button>
-              </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div className="rounded-md border p-3">
                   <h3 className="mb-2 text-sm font-semibold">Job Titles</h3>
@@ -753,31 +903,120 @@ export default function HRDashboard() {
                     <button onClick={addJobTitle} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
                   </div>
                   <ul className="max-h-36 overflow-auto text-xs">
-                    {jobTitles.map((jt) => (<li key={jt.id} className="border-b py-1 last:border-b-0">{jt.name}</li>))}
+                    {jobTitles.map((jt) => (
+                      <li key={jt.id} className="flex items-center justify-between gap-2 border-b py-1 last:border-b-0">
+                        {editingJobTitleId === jt.id ? (
+                          <>
+                            <input value={editingJobTitleName} onChange={(e)=>setEditingJobTitleName(e.target.value)} className="flex-1 rounded border px-2 py-1" />
+                            <div className="flex items-center gap-1">
+                              <button onClick={saveEditJobTitle} className="rounded border px-2 py-0.5 text-[11px]">Save</button>
+                              <button onClick={cancelEditJobTitle} className="rounded border px-2 py-0.5 text-[11px]">Cancel</button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <span className="flex-1">{jt.name}</span>
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => startEditJobTitle(jt)} className="rounded border px-2 py-0.5 text-[11px]">Edit</button>
+                              <button onClick={() => deleteJobTitle(jt.id)} className="rounded border px-2 py-0.5 text-[11px]">Delete</button>
+                            </div>
+                          </>
+                        )}
+                      </li>
+                    ))}
                   </ul>
                 </div>
                 <div className="rounded-md border p-3">
                   <h3 className="mb-2 text-sm font-semibold">Shifts</h3>
                   <div className="mb-2 grid grid-cols-4 gap-2">
                     <input value={newShift.name} onChange={(e) => setNewShift((s) => ({ ...s, name: e.target.value }))} placeholder="Name" className="rounded-md border px-2 py-2" />
-                    <input type="number" value={newShift.duration_minutes} onChange={(e) => setNewShift((s) => ({ ...s, duration_minutes: Number(e.target.value) }))} placeholder="Minutes" className="rounded-md border px-2 py-2" />
-                    <input type="time" value={newShift.start_time ?? ""} onChange={(e) => setNewShift((s) => ({ ...s, start_time: e.target.value }))} className="rounded-md border px-2 py-2" />
+                    <input
+                      type="number"
+                      step="0.25"
+                      value={(newShift.duration_minutes ?? 0) / 60}
+                      onChange={(e) => {
+                        const hours = parseFloat(e.target.value || '0');
+                        const minutes = Math.max(0, Math.round(hours * 60));
+                        setNewShift((s) => ({
+                          ...s,
+                          duration_minutes: minutes,
+                          end_time: s.start_time ? computeEndFromStart(s.start_time, minutes) : s.end_time
+                        }));
+                      }}
+                      placeholder="Hours"
+                      className="rounded-md border px-2 py-2"
+                    />
+                    <input
+                      type="time"
+                      value={newShift.start_time ?? ""}
+                      onChange={(e) => setNewShift((s) => ({
+                        ...s,
+                        start_time: e.target.value,
+                        end_time: e.target.value && s.duration_minutes ? computeEndFromStart(e.target.value, s.duration_minutes) : s.end_time
+                      }))}
+                      className="rounded-md border px-2 py-2"
+                    />
                     <input type="time" value={newShift.end_time ?? ""} onChange={(e) => setNewShift((s) => ({ ...s, end_time: e.target.value }))} className="rounded-md border px-2 py-2" />
                   </div>
                   <button onClick={addShift} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
                   <ul className="mt-2 max-h-36 overflow-auto text-xs">
-                    {shifts.map((sh) => (<li key={sh.id} className="border-b py-1 last:border-b-0">{sh.name} — {sh.duration_minutes} mins</li>))}
+                    {shifts.map((sh) => {
+                      const isEditing = editingShiftId === sh.id;
+                      const hrs = (Number((isEditing ? editingShift.duration_minutes : sh.duration_minutes) || 0) / 60).toFixed(2).replace(/\.00$/, '');
+                      const range = !isEditing && [sh.start_time, sh.end_time].every(Boolean) ? ` (${sh.start_time} - ${sh.end_time})` : '';
+                      return (
+                        <li key={sh.id} className="flex items-center justify-between gap-2 border-b py-1 last:border-b-0">
+                          {isEditing ? (
+                            <div className="flex flex-1 items-center gap-2">
+                              <input value={editingShift.name} onChange={(e)=>setEditingShift((s)=>({...s, name: e.target.value}))} className="min-w-[140px] rounded border px-2 py-1" />
+                              <input type="number" step="0.25" value={(editingShift.duration_minutes??0)/60} onChange={(e)=>{
+                                const h = parseFloat(e.target.value||'0');
+                                setEditingShift((s)=>({...s, duration_minutes: Math.max(0, Math.round(h*60))}));
+                              }} className="w-20 rounded border px-2 py-1" />
+                              <input type="time" value={editingShift.start_time ?? ''} onChange={(e)=>setEditingShift((s)=>({...s, start_time: e.target.value}))} className="rounded border px-2 py-1" />
+                              <input type="time" value={editingShift.end_time ?? ''} onChange={(e)=>setEditingShift((s)=>({...s, end_time: e.target.value}))} className="rounded border px-2 py-1" />
+                            </div>
+                          ) : (
+                            <span className="flex-1">{sh.name} — {hrs} hrs{range}</span>
+                          )}
+                          <div className="flex items-center gap-1">
+                            {isEditing ? (
+                              <>
+                                <button onClick={saveEditShift} className="rounded border px-2 py-0.5 text-[11px]">Save</button>
+                                <button onClick={cancelEditShift} className="rounded border px-2 py-0.5 text-[11px]">Cancel</button>
+                              </>
+                            ) : (
+                              <>
+                                <button onClick={() => startEditShift(sh)} className="rounded border px-2 py-0.5 text-[11px]">Edit</button>
+                                <button onClick={() => deleteShift(sh.id)} className="rounded border px-2 py-0.5 text-[11px]">Delete</button>
+                              </>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
                 <div className="rounded-md border p-3">
                   <h3 className="mb-2 text-sm font-semibold">Holidays</h3>
-                  <div className="mb-2 flex gap-2">
-                    <input type="date" value={newHoliday.day} onChange={(e) => setNewHoliday((s) => ({ ...s, day: e.target.value }))} className="rounded-md border px-3 py-2" />
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <input type="date" value={newHoliday.date} onChange={(e) => setNewHoliday((s) => ({ ...s, date: e.target.value }))} className="rounded-md border px-3 py-2" />
                     <input value={newHoliday.name} onChange={(e) => setNewHoliday((s) => ({ ...s, name: e.target.value }))} placeholder="Name (optional)" className="rounded-md border px-3 py-2" />
+                    <label className="flex items-center gap-1 text-xs">
+                      <input type="checkbox" checked={!!newHoliday.recurring} onChange={(e) => setNewHoliday((s)=> ({...s, recurring: e.target.checked}))} /> Recurring
+                    </label>
                     <button onClick={addHoliday} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
                   </div>
                   <ul className="max-h-36 overflow-auto text-xs">
-                    {holidays.map((h) => (<li key={h.id} className="border-b py-1 last:border-b-0">{new Date(h.day).toLocaleDateString()} — {h.name ?? ""}</li>))}
+                    {holidays.map((h: any) => {
+                      const dateStr = h.date ?? h.day; // support legacy
+                      return (
+                        <li key={dateStr} className="flex items-center justify-between border-b py-1 last:border-b-0">
+                          <span>{new Date(dateStr).toLocaleDateString()} {h.name ? `— ${h.name}` : ''} {h.recurring ? '(recurring)' : ''}</span>
+                          <button onClick={() => deleteHoliday(dateStr)} className="rounded border px-2 py-0.5 text-[11px]">Delete</button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
                 <div className="rounded-md border p-3">
@@ -788,7 +1027,12 @@ export default function HRDashboard() {
                     <button onClick={addBreakRule} className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
                   </div>
                   <ul className="max-h-36 overflow-auto text-xs">
-                    {breakRules.map((b) => (<li key={b.id} className="border-b py-1 last:border-b-0">{b.name} — {b.minutes} mins</li>))}
+                    {breakRules.map((b) => (
+                      <li key={b.id} className="flex items-center justify-between border-b py-1 last:border-b-0">
+                        <span>{b.name} — {b.minutes} mins</span>
+                        <button onClick={() => deleteBreakRule(b.id)} className="rounded border px-2 py-0.5 text-[11px]">Delete</button>
+                      </li>
+                    ))}
                   </ul>
                 </div>
               </div>
@@ -943,6 +1187,45 @@ export default function HRDashboard() {
 
         {err && <p className="text-sm text-rose-600">{err}</p>}
         {okMsg && <p className="text-sm text-emerald-600">{okMsg}</p>}
+
+        {/* Staff Cards Tab */}
+        {tab === "cards" && (
+          <section className="rounded-lg border p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-lg font-medium">Staff Cards</h2>
+              <button onClick={loadStaffCardsData} className="text-xs text-brand-primary">Refresh</button>
+            </div>
+            {!staffCards || staffCards.length === 0 ? (
+              <p className="text-sm opacity-70">No staff found.</p>
+            ) : (
+              <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+                {staffCards.map((r: any) => (
+                  <li key={r.user_id}>
+                    <StaffCard
+                      staff={{
+                        id: r.user_id,
+                        full_name: r.name,
+                        title: r.title ?? null,
+                        team: r.team ?? null,
+                        avatar_url: r.avatar_url ?? null,
+                        status: r.status ?? null,
+                        today_check_in: null,
+                        today_check_out: null,
+                        warnings_count: r.warnings_count ?? 0,
+                      }}
+                      onShowMore={(id) => {
+                        setActiveStaff({ id, full_name: r.name, title: r.title ?? null, team: r.team ?? null, avatar_url: r.avatar_url ?? null });
+                        setOpenStaffModal(true);
+                      }}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        <StaffDetailsModal open={openStaffModal} onClose={() => setOpenStaffModal(false)} staff={activeStaff} />
       </div>
     </RoleGate>
   );

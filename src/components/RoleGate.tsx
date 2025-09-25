@@ -19,6 +19,11 @@ export default function RoleGate({ allow, children }: { allow: Role[]; children:
       setResolving(true);
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
+        // If not logged in, stop loading and render nothing while we redirect
+        if (mounted) {
+          setOk(false);
+          setResolving(false);
+        }
         router.replace("/login");
         return;
       }
@@ -26,9 +31,14 @@ export default function RoleGate({ allow, children }: { allow: Role[]; children:
       let role: Role | null = null;
       let tries = 0;
       while (mounted && tries < 4 && !role) {
-        const { data: rpcRole, error } = await supabase.rpc('fn_current_role');
-        if (error) console.warn('RoleGate: rpc error', error);
-        role = (rpcRole as Role | null) ?? null;
+        // Race the RPC against a short timeout so we never hang indefinitely
+        const timeoutMs = 1200 + tries * 200;
+        const result: any = await Promise.race([
+          supabase.rpc('fn_current_role'),
+          new Promise((resolve) => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), timeoutMs)),
+        ]);
+        if (result?.error) console.warn('RoleGate: rpc error', result.error);
+        role = (result?.data as Role | null) ?? null;
         if (!role) await new Promise((r) => setTimeout(r, 50 + tries * tries * 50));
         tries++;
       }

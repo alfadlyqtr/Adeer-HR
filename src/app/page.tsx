@@ -2,7 +2,6 @@ import Link from "next/link";
 import fs from "node:fs";
 import path from "node:path";
 import QuotesRotator from "@/components/QuotesRotator";
-import CEOBroadcast from "@/components/CEOBroadcast";
 
 export default function Home() {
   // Load quotes from project root file d:\\CascadeProjects\\Adeer-HR\\quots
@@ -76,10 +75,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* CEO Broadcast (site-wide message) */}
-      <section className="container-app mt-8">
-        <CEOBroadcast />
-      </section>
 
       {/* CEO Message + Daily Inspiration side-by-side */}
       <section className="container-app mt-10 md:mt-12">

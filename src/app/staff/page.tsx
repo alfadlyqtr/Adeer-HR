@@ -1,6 +1,5 @@
 "use client";
 import RoleGate from "@/components/RoleGate";
-import CEOBroadcast from "@/components/CEOBroadcast";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -236,8 +235,6 @@ export default function StaffDashboard() {
   return (
     <RoleGate allow={["staff", "assistant_manager", "manager"]}>
       <div className="space-y-6">
-        {/* CEO Broadcast visible to all staff */}
-        <CEOBroadcast />
         <h1 className="text-2xl font-semibold">Welcome Staff Dashboard</h1>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

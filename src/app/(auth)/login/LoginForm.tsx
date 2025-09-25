@@ -16,62 +16,24 @@ export default function LoginForm() {
       setMessage(null);
       setLoading(true);
 
-      console.log("Attempting login with proxy:", email);
-      
-      // Use our proxy endpoint to avoid CORS issues
-      try {
-        // First check if we can reach our own API endpoint
-        const healthCheck = await fetch('/api/auth-proxy');
-        console.log('API connectivity check:', healthCheck.ok);
-      } catch (networkErr) {
-        console.warn('Network connectivity test failed:', networkErr);
-        // Continue anyway as the actual auth call may still work
-      }
-      
-      // Try to login using our proxy endpoint
-      const proxyResponse = await fetch('/api/auth-proxy', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          email,
-          password,
-          // Pass through Supabase credentials from env or custom inputs
-          supabaseUrl: supabaseUrl || undefined,
-          supabaseKey: supabaseKey || undefined
-        })
-      });
-      
-      // Check for HTTP errors
-      if (!proxyResponse.ok) {
-        const errorData = await proxyResponse.json();
-        throw new Error(errorData.error || `Login failed with status ${proxyResponse.status}`);
-      }
-      
-      // Parse the response
-      const authData = await proxyResponse.json().catch(() => ({}));
-      
-      // Validate response format
-      if (!authData || typeof authData !== 'object') {
-        throw new Error("Invalid response format from authentication server");
-      }
-      
-      // Validate the response
-      if (authData.error) {
-        throw new Error(authData.error_description || authData.error);
-      }
-      
-      if (!authData.access_token) {
-        throw new Error("No access token returned");
-      }
-      
-      // Store the tokens in localStorage for Supabase client to use
-      localStorage.setItem('sb-access-token', authData.access_token);
-      localStorage.setItem('sb-refresh-token', authData.refresh_token);
+      console.log("Attempting direct Supabase login:", email);
 
-      console.log("Login successful, redirecting to dashboard");
-      
+      // Use direct Supabase SDK for login
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (!data?.user) {
+        throw new Error("No user returned from login");
+      }
+
+      console.log("✅ Login successful, redirecting to dashboard");
+
       // Wait a moment for tokens to be stored
       setTimeout(() => {
         // Always go to central dashboard for proper role-based routing
@@ -81,17 +43,12 @@ export default function LoginForm() {
     } catch (err: any) {
       console.error("Login failed:", err);
       // Provide more helpful error messages based on error types
-      if (err.message?.includes('Failed to fetch')) {
-        setMessage('Network error: Unable to connect to the authentication service. Please check your internet connection.');
-      } else if (err.message?.includes('timed out')) {
-        setMessage('Request timed out. The server is taking too long to respond.');
-      } else if (err.message?.includes('Invalid login')) {
+      if (err.message?.includes('Invalid login')) {
         setMessage('Invalid email or password. Please try again.');
-      } else if (err.message?.includes('CORS')) {
-        setMessage('Cross-origin request blocked. Using proxy server instead.');
-        // Try alternative authentication method
-        handleDirectLogin();
-        return;
+      } else if (err.message?.includes('Email not confirmed')) {
+        setMessage('Please check your email and click the confirmation link before logging in.');
+      } else if (err.message?.includes('Too many requests')) {
+        setMessage('Too many login attempts. Please wait a few minutes and try again.');
       } else {
         setMessage(err?.message ?? "Login failed");
       }
@@ -103,30 +60,30 @@ export default function LoginForm() {
   const handleDirectLogin = async () => {
     try {
       setMessage("Trying direct authentication...");
-      
+
       // Use Supabase SDK for login with timeout
       const loginPromise = supabase.auth.signInWithPassword({
         email,
         password,
       });
-      
+
       // Create a timeout promise
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error('Login request timed out after 10 seconds')), 10000);
       });
-      
+
       // Race the login against a timeout
       const result = await Promise.race([loginPromise, timeoutPromise])
         .then(result => result as Awaited<typeof loginPromise>)
         .catch(err => {
           throw err; // Rethrow to be caught by the outer try-catch
         });
-        
+
       // Check if result exists and has expected structure
       if (!result) {
         throw new Error("Authentication returned empty result");
       }
-      
+
       const { data, error } = result;
 
       if (error) {
@@ -140,7 +97,7 @@ export default function LoginForm() {
 
       console.log("Direct login successful, redirecting to dashboard");
       window.location.href = "/dashboard";
-      
+
     } catch (err: any) {
       console.error("Direct login failed:", err);
       setMessage(`Direct login also failed: ${err?.message}`);
@@ -303,6 +260,9 @@ export default function LoginForm() {
             className="w-full rounded-md border px-3 py-2 outline-none focus:ring-2 focus:ring-brand-primary"
             placeholder="••••••••"
           />
+          <div className="mt-1 text-right">
+            <a href="/forgot-password" className="text-xs text-brand-primary hover:underline">Forgot password?</a>
+          </div>
         </div>
 
         <button

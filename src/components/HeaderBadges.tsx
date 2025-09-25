@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { Crown } from "lucide-react";
+import { Award } from "lucide-react";
 
 export default function HeaderBadges() {
   const [role, setRole] = useState<string | null>(null);
@@ -44,7 +44,7 @@ export default function HeaderBadges() {
   if (role === "ceo") {
     return (
       <div className="badge-ceo badge-ceo-light dark:badge-ceo-dark" title="CEO Mode">
-        <Crown size={14} />
+        <Award size={14} />
         <span>CEO Mode</span>
       </div>
     );

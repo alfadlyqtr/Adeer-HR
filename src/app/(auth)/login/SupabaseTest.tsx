@@ -16,16 +16,16 @@ export default function SupabaseTest() {
   const runConnectionTest = async () => {
     setLoading(true);
     setResults([]);
-    
+
     try {
       // Get environment variables
       const supabaseUrl = url || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
       const supabaseKey = key || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-      
+
       // Log what we're using
       log(`Testing connection to: ${supabaseUrl}`);
       log(`Using key: ${supabaseKey ? supabaseKey.substring(0, 5) + '...' : 'Not set'}`);
-      
+
       // Try basic fetch to the URL
       try {
         log('Attempting basic URL fetch...');
@@ -37,22 +37,7 @@ export default function SupabaseTest() {
       } catch (err: any) {
         log(`URL access failed: ${err.message}`);
       }
-      
-      // Try proxy API endpoint
-      try {
-        log('Attempting auth via proxy API...');
-        const proxyResponse = await fetch('/api/auth-proxy?url=' + encodeURIComponent(supabaseUrl) + '&key=' + encodeURIComponent(supabaseKey));
-        const proxyData = await proxyResponse.json();
-        
-        if (proxyResponse.ok) {
-          log(`✅ Proxy connection successful: ${proxyData.message || 'Connection OK'}`);
-        } else {
-          log(`❌ Proxy connection failed: ${proxyData.error || 'Unknown error'}`);
-        }
-      } catch (err: any) {
-        log(`❌ Proxy API access failed: ${err.message}`);
-      }
-      
+
       // Try direct auth endpoint (likely to fail with CORS)
       try {
         log('Attempting direct auth endpoint access (may fail with CORS)...');
@@ -67,20 +52,20 @@ export default function SupabaseTest() {
       } catch (err: any) {
         log(`❌ Direct auth endpoint access failed: ${err.message}`);
       }
-      
+
       // Try to manually create the connection using our resetSupabaseClient function
       try {
         log('Attempting to create test client with provided credentials...');
-        
+
         if (supabaseUrl && supabaseKey) {
-          // Save the credentials to localStorage and reset the client
+          // Use our reset function to create a new client with the custom credentials
           log('Using resetSupabaseClient with provided credentials...');
           const testClient = resetSupabaseClient(supabaseUrl, supabaseKey);
-          log('Client initialized successfully');
-          
+          log('✅ Client initialized successfully');
+
           log('Testing authentication service...');
           const { data, error } = await testClient.auth.getSession();
-          
+
           if (error) {
             log(`❌ Auth test error: ${error.message}`);
           } else {
@@ -98,9 +83,9 @@ export default function SupabaseTest() {
       } catch (err: any) {
         log(`❌ Supabase client test failed: ${err.message}`);
       }
-      
+
       log('--- Test completed ---');
-      
+
     } catch (error: any) {
       log(`Test failed with error: ${error.message}`);
     } finally {

@@ -7,24 +7,24 @@ import { NextRequest, NextResponse } from "next/server";
 export async function POST(request: NextRequest) {
   try {
     const requestData = await request.json();
-    
+
     // Get Supabase URL from environment or request
     const supabaseUrl = requestData.supabaseUrl || process.env.NEXT_PUBLIC_SUPABASE_URL;
     // Get anon key from environment or request
     const supabaseKey = requestData.supabaseKey || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    
+
     // Validate parameters
     if (!supabaseUrl) {
       return NextResponse.json({ error: "Missing Supabase URL" }, { status: 400 });
     }
-    
+
     if (!supabaseKey) {
       return NextResponse.json({ error: "Missing Supabase anon key" }, { status: 400 });
     }
-    
+
     // Construct auth endpoint URL
     const authEndpoint = `${supabaseUrl}/auth/v1/token`;
-    
+
     // Call the Supabase API
     const response = await fetch(authEndpoint, {
       method: "POST",
@@ -39,10 +39,10 @@ export async function POST(request: NextRequest) {
         grant_type: "password"
       })
     });
-    
+
     // Get response data
     const responseData = await response.json();
-    
+
     // Return proxied response
     return NextResponse.json(
       responseData,
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Get session endpoint
+ * Health check endpoint
  */
 export async function GET(request: NextRequest) {
   try {
@@ -66,36 +66,37 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const supabaseUrl = searchParams.get('url') || process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = searchParams.get('key') || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    
+
     // Validate parameters
     if (!supabaseUrl) {
       return NextResponse.json({ error: "Missing Supabase URL" }, { status: 400 });
     }
-    
+
     if (!supabaseKey) {
       return NextResponse.json({ error: "Missing Supabase anon key" }, { status: 400 });
     }
-    
+
     // Try a simple health check
-    const healthEndpoint = `${supabaseUrl}/auth/v1/`;
-    
+    const healthEndpoint = `${supabaseUrl}/rest/v1/`;
+
     const response = await fetch(healthEndpoint, {
       method: "GET",
       headers: {
         "apikey": supabaseKey,
-        "Authorization": `Bearer ${supabaseKey}`
+        "Authorization": `Bearer ${supabaseKey}`,
+        "Content-Type": "application/json"
       }
     });
-    
+
     if (!response.ok) {
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: "Supabase connection failed",
         status: response.status,
         statusText: response.statusText
       }, { status: response.status });
     }
-    
-    return NextResponse.json({ 
+
+    return NextResponse.json({
       ok: true,
       status: response.status,
       message: "Supabase connection successful"
