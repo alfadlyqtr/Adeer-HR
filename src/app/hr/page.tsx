@@ -2,8 +2,10 @@
 import RoleGate from "@/components/RoleGate";
 import CEOSnapshot from "@/components/CEOSnapshot";
 import CEOBroadcast from "@/components/CEOBroadcast";
+import DailyQuote from "@/components/DailyQuote";
 import StaffCard from "@/components/staff/StaffCard";
 import StaffDetailsModal from "@/components/staff/StaffDetailsModal";
+import NewStaffModal, { NewStaffPayload } from "@/components/staff/NewStaffModal";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useUserRole } from "@/hooks/useUserRole";
@@ -11,7 +13,7 @@ import { useUserRole } from "@/hooks/useUserRole";
 export default function HRDashboard() {
   const { role } = useUserRole();
   const [goldMode, setGoldMode] = useState(false);
-  const [tab, setTab] = useState<"overview" | "approvals" | "staff" | "settings" | "teams" | "folders" | "reports" | "warnings" | "ceo" | "cards">("overview");
+  const [tab, setTab] = useState<"overview" | "approvals" | "staff" | "settings" | "teams" | "reports" | "warnings" | "ceo" | "cards">("overview");
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState<string>("");
   const [punchLoading, setPunchLoading] = useState(false);
@@ -22,6 +24,8 @@ export default function HRDashboard() {
   const [newUser, setNewUser] = useState<{ email: string; role: string } | null>({ email: "", role: "staff" });
   const [brand, setBrand] = useState<{ color?: string; logo_url?: string }>({});
   const [uploading, setUploading] = useState(false);
+  const [openNewStaff, setOpenNewStaff] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{ open: boolean; action?: 'delete'|'suspend'|'unsuspend'; user?: { id: string; email?: string|null } }>({ open: false });
   // Central role management sourced from public.user_roles
   const [userRolesMap, setUserRolesMap] = useState<Record<string, string>>({});
 
@@ -156,7 +160,7 @@ export default function HRDashboard() {
   // Fetch data when tab changes
   useEffect(() => {
     if (tab === "approvals") refreshApprovals();
-    if (tab === "staff") refreshUsers();
+    if (tab === "staff") { refreshUsers(); if (role === 'hr' || role === 'ceo') syncAuthUsers(); }
     if (tab === "teams") loadTeams();
     if (tab === "warnings") loadWarnings();
     if (tab === "settings") loadSettingsData();
@@ -166,6 +170,13 @@ export default function HRDashboard() {
       loadWeeklyTrends();
     }
   }, [tab]);
+
+  // Auto-sync once when role is known (HR/CEO)
+  useEffect(() => {
+    if (role === 'hr' || role === 'ceo') {
+      syncAuthUsers();
+    }
+  }, [role]);
 
   // Tick every second for live timers in status list
   useEffect(() => {
@@ -300,10 +311,116 @@ export default function HRDashboard() {
     }
   }
 
+  function generateTempPassword() {
+    const rand = Math.random().toString(36).slice(2, 8);
+    return `Adeer-${rand}-2025`;
+  }
+
+  // Save handler for New Staff Modal -> call secure API to create auth user + profile
+  async function saveNewStaff(payload: NewStaffPayload) {
+    setOkMsg(null); setErr(null);
+    try {
+      if (!payload?.email) { setErr("Email is required"); return; }
+      const tempPassword = generateTempPassword();
+      const res = await fetch("/api/admin/create-staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: payload.email,
+          fullName: payload.fullName,
+          role: payload.role ?? "staff",
+          employmentId: payload.employmentId,
+          tempPassword,
+          phone: payload.phone,
+          nationality: payload.nationality,
+          joiningDate: payload.joiningDate,
+          address: payload.address,
+          passportNumber: payload.passportNumber,
+          passportIssueDate: payload.passportIssueDate,
+          passportExpiryDate: payload.passportExpiryDate,
+          idNumber: payload.idNumber,
+          idExpiryDate: payload.idExpiryDate,
+          driverLicenseNumber: payload.driverLicenseNumber,
+          driverLicenseExpiryDate: payload.driverLicenseExpiryDate,
+          notes: payload.notes,
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to create staff");
+      setOkMsg(`Staff account created. Temporary password: ${tempPassword}`);
+      await refreshUsers();
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to save staff");
+    }
+  }
+
   async function updateUserJobShift(userId: string, patch: { job_title_id?: string | null; shift_id?: string | null }) {
     setOkMsg(null); setErr(null);
     const { error } = await supabase.from("users").update(patch).eq("id", userId);
     if (error) setErr(error.message); else { setOkMsg("User updated."); await refreshUsers(); }
+  }
+
+  // Open confirmation modal
+  function openConfirm(action: 'delete'|'suspend'|'unsuspend', user: { id: string; email?: string|null }) {
+    setConfirmModal({ open: true, action, user });
+  }
+
+  // Execute the confirmed action
+  async function runConfirmedAction() {
+    if (!confirmModal.open || !confirmModal.action || !confirmModal.user) return;
+    const { action, user } = confirmModal;
+    setOkMsg(null); setErr(null);
+    try {
+      if (action === 'delete') {
+        const res = await fetch('/api/admin/delete-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: user.id }) });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || 'Failed to delete user');
+        setOkMsg('User deleted.');
+      } else if (action === 'suspend') {
+        const res = await fetch('/api/admin/suspend-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: user.id }) });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || 'Failed to suspend user');
+        setOkMsg('User suspended.');
+      } else if (action === 'unsuspend') {
+        const res = await fetch('/api/admin/unsuspend-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: user.id }) });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || 'Failed to unsuspend user');
+        setOkMsg('User unsuspended.');
+      }
+      await refreshUsers();
+    } catch (e: any) {
+      setErr(e?.message ?? 'Action failed');
+    } finally {
+      setConfirmModal({ open: false });
+    }
+  }
+
+  // Kept for potential direct calls, but UI uses confirm modal
+  async function suspendUser(userId: string) {
+    setOkMsg(null); setErr(null);
+    const res = await fetch('/api/admin/suspend-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId }) });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error || 'Failed to suspend user');
+  }
+
+  async function unsuspendUser(userId: string) {
+    setOkMsg(null); setErr(null);
+    const res = await fetch('/api/admin/unsuspend-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId }) });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error || 'Failed to unsuspend user');
+  }
+
+  async function syncAuthUsers() {
+    setOkMsg(null); setErr(null);
+    try {
+      const res = await fetch('/api/admin/sync-users', { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || 'Failed to sync users');
+      setOkMsg(`Synced ${json?.synced ?? 0} users.`);
+      await refreshUsers();
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to sync users');
+    }
   }
 
   async function updateLeaveStatus(id: string, status: "approved" | "rejected") {
@@ -658,7 +775,7 @@ export default function HRDashboard() {
 
   return (
     <RoleGate allow={["hr", "ceo"]}>
-      <div className="space-y-6">
+      <div className="space-y-6 p-4 md:p-6">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold">
             {role === 'ceo' ? (
@@ -672,18 +789,37 @@ export default function HRDashboard() {
 
           </h1>
 
-
           </div>
+
+        {/* Daily Quote */}
+        <DailyQuote />
+
+        {/* Quick Actions: Punch In/Out */}
+        <div className="flex items-center justify-end gap-3">
+          <button
+            onClick={() => logAttendance("check_in")}
+            disabled={punchLoading}
+            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${goldMode && role === 'ceo' ? 'bg-[#D4AF37] text-black hover:bg-[#c6a232]' : 'bg-brand-primary text-white hover:bg-brand-primary/90'}`}
+          >
+            Punch In
+          </button>
+          <button
+            onClick={() => logAttendance("check_out")}
+            disabled={punchLoading}
+            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${goldMode && role === 'ceo' ? 'bg-[#2b2b2b] text-white hover:bg-black/80' : 'bg-gray-800 text-white hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600'}`}
+          >
+            Punch Out
+          </button>
+        </div>
 
         {/* Tabs */}
         <nav className={`flex gap-2 overflow-x-auto rounded-lg border p-1 text-sm backdrop-blur supports-[backdrop-filter]:backdrop-blur-md ${goldMode && role === 'ceo' ? 'bg-[#1a1400]/40 border-[#D4AF37]/30' : 'bg-white/60 dark:bg-black/20 border-brand-primary/20'}`} aria-label="Sections">
           <button onClick={() => setTab("overview")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "overview" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Overview</button>
           <button onClick={() => setTab("approvals")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "approvals" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Approvals</button>
-          <button onClick={() => setTab("staff")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "staff" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Staff Admin</button>
+          <button onClick={() => setTab("staff")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "staff" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Users</button>
           <button onClick={() => setTab("cards")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "cards" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Staff Cards</button>
           <button onClick={() => setTab("settings")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "settings" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Settings</button>
           <button onClick={() => setTab("teams")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "teams" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Teams</button>
-          <button onClick={() => setTab("folders")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "folders" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>HR Folders</button>
           <button onClick={() => setTab("reports")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "reports" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Reports</button>
           <button onClick={() => setTab("warnings")} className={`rounded-md px-3 py-1.5 transition-all duration-200 ${tab === "warnings" ? (goldMode && role === 'ceo' ? "bg-[#D4AF37]/15 text-[#D4AF37] ring-1 ring-[#D4AF37] shadow-[0_0_12px_rgba(212,175,55,0.35)]" : "bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary shadow-[0_0_12px_rgba(77,107,241,0.35)]") : (goldMode && role === 'ceo' ? "opacity-80 hover:opacity-100 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10" : "opacity-80 hover:opacity-100 hover:text-brand-primary hover:bg-brand-primary/10")}`}>Warnings</button>
         </nav>
@@ -818,12 +954,16 @@ export default function HRDashboard() {
         </div>
         )}
 
-          {/* Staff Admin */}
+          {/* Staff Admin + HR Folders (combined) */}
           {tab === "staff" && (
-          <section className="rounded-lg border p-4">
+          <section className="rounded-lg border p-4 space-y-6">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-lg font-medium">Staff Admin</h2>
-              <button onClick={refreshUserRoles} className="rounded-md border px-2 py-1 text-xs">Refresh Roles</button>
+              <h2 className="text-lg font-medium">Users</h2>
+              <div className="flex items-center gap-2">
+                <button onClick={refreshUserRoles} className="rounded-md border px-2 py-1 text-xs">Refresh Roles</button>
+                <button onClick={syncAuthUsers} className="rounded-md border px-2 py-1 text-xs">Sync Auth Users</button>
+                <button onClick={() => setOpenNewStaff(true)} className={`rounded-md px-3 py-1.5 text-xs ${goldMode && role === 'ceo' ? 'bg-[#D4AF37] text-black hover:bg-[#c6a232]' : 'bg-brand-primary text-white hover:bg-brand-primary/90'}`}>Invite New Staff</button>
+              </div>
             </div>
             <form onSubmit={createBasicUser} className="mb-3 flex flex-wrap items-end gap-2 text-sm">
               <div>
@@ -874,19 +1014,43 @@ export default function HRDashboard() {
                         </select>
                       </td>
                       <td className="py-2">
-                        <select value={userRolesMap[u.id] ?? u.role} onChange={(e) => updateUserRoleCentral(u.id, e.target.value)} className="rounded-md border px-2 py-1 text-xs">
-                          <option value="staff">staff</option>
-                          <option value="assistant_manager">assistant_manager</option>
-                          <option value="manager">manager</option>
-                          <option value="hr">hr</option>
-                          <option value="ceo">ceo</option>
-                        </select>
+                        <div className="flex items-center gap-2">
+                          <select value={userRolesMap[u.id] ?? u.role} onChange={(e) => updateUserRoleCentral(u.id, e.target.value)} className="rounded-md border px-2 py-1 text-xs">
+                            <option value="staff">staff</option>
+                            <option value="assistant_manager">assistant_manager</option>
+                            <option value="manager">manager</option>
+                            <option value="hr">hr</option>
+                            <option value="ceo">ceo</option>
+                          </select>
+                          <button
+                            onClick={() => openConfirm('suspend', { id: u.id, email: u.email })}
+                            className="rounded-md border px-2 py-1 text-xs text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+                            title="Suspend user"
+                          >
+                            Suspend
+                          </button>
+                          <button
+                            onClick={() => openConfirm('unsuspend', { id: u.id, email: u.email })}
+                            className="rounded-md border px-2 py-1 text-xs text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
+                            title="Unsuspend user"
+                          >
+                            Unsuspend
+                          </button>
+                          <button
+                            onClick={() => openConfirm('delete', { id: u.id, email: u.email })}
+                            className="rounded-md border px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20"
+                            title="Delete user"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {/* Removed HR Folders upload form as requested */}
           </section>
           )}
 
@@ -1041,36 +1205,7 @@ export default function HRDashboard() {
           </section>
           )}
 
-          {/* HR Folders */}
-          {tab === "folders" && (
-          <section className="rounded-lg border p-4">
-            <h2 className="mb-2 text-lg font-medium">HR Folders</h2>
-            <form onSubmit={handleUpload} className="space-y-3 text-sm">
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                <div>
-                  <label className="mb-1 block text-xs">Employee</label>
-                  <select value={fileMeta.user_id} onChange={(e) => setFileMeta((s) => ({ ...s, user_id: e.target.value }))} className="w-full rounded-md border px-3 py-2">
-                    <option value="">Select…</option>
-                    {users.map((u) => (
-                      <option key={u.id} value={u.id}>{u.full_name ?? u.email ?? u.id}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs">Category</label>
-                  <input value={fileMeta.category} onChange={(e) => setFileMeta((s) => ({ ...s, category: e.target.value }))} className="w-full rounded-md border px-3 py-2" placeholder="Contract" />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs">Expiry Date</label>
-                  <input type="date" value={fileMeta.expiry_date ?? ""} onChange={(e) => setFileMeta((s) => ({ ...s, expiry_date: e.target.value }))} className="w-full rounded-md border px-3 py-2" />
-                </div>
-              </div>
-              <input name="file" type="file" className="block" />
-              <button type="submit" disabled={uploading} className="rounded-md bg-brand-primary px-3 py-2 text-white disabled:opacity-50">{uploading ? "Uploading…" : "Upload"}</button>
-              <p className="text-xs opacity-70">Uploads go to storage bucket `hr-files` and metadata is saved in `staff_files`.</p>
-            </form>
-          </section>
-          )}
+          
 
           {/* Reports */}
           {tab === "reports" && (
@@ -1226,6 +1361,31 @@ export default function HRDashboard() {
         )}
 
         <StaffDetailsModal open={openStaffModal} onClose={() => setOpenStaffModal(false)} staff={activeStaff} />
+        <NewStaffModal open={openNewStaff} onClose={() => setOpenNewStaff(false)} onSave={saveNewStaff} goldMode={goldMode && role === 'ceo'} />
+
+        {confirmModal.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmModal({ open: false })} />
+            <div className="relative z-10 w-[min(460px,95vw)] rounded-xl border bg-white p-4 shadow-xl dark:bg-black">
+              <h3 className="mb-2 text-base font-semibold">Please confirm</h3>
+              <p className="mb-4 text-sm">
+                {confirmModal.action === 'delete' && (
+                  <>Delete user {confirmModal.user?.email ? (<b>{`"${confirmModal.user?.email}"`}</b>) : null}? This will also remove their Auth account.</>
+                )}
+                {confirmModal.action === 'suspend' && (
+                  <>Suspend (block) user {confirmModal.user?.email ? (<b>{`"${confirmModal.user?.email}"`}</b>) : null}? They will be prevented from logging in.</>
+                )}
+                {confirmModal.action === 'unsuspend' && (
+                  <>Unsuspend user {confirmModal.user?.email ? (<b>{`"${confirmModal.user?.email}"`}</b>) : null} and allow them to log in?</>
+                )}
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button onClick={() => setConfirmModal({ open: false })} className="rounded-md border px-3 py-2 text-sm">Cancel</button>
+                <button onClick={runConfirmedAction} className="rounded-md bg-brand-primary px-3 py-2 text-sm text-white">Confirm</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </RoleGate>
   );

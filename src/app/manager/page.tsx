@@ -1,5 +1,6 @@
 "use client";
 import RoleGate from "@/components/RoleGate";
+import DailyQuote from "@/components/DailyQuote";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useUserRole } from "@/hooks/useUserRole";
@@ -165,8 +166,11 @@ export default function ManagerDashboard() {
 
   return (
     <RoleGate allow={["manager", "assistant_manager", "hr", "ceo"]}>
-      <div className="space-y-6">
+      <div className="space-y-6 p-4 md:p-6">
         <h1 className="text-2xl font-semibold">Welcome Manager Dashboard</h1>
+        
+        {/* Daily Quote */}
+        <DailyQuote />
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {/* Realtime In/Out */}

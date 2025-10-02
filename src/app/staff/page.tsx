@@ -1,5 +1,6 @@
 "use client";
 import RoleGate from "@/components/RoleGate";
+import DailyQuote from "@/components/DailyQuote";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -234,8 +235,11 @@ export default function StaffDashboard() {
 
   return (
     <RoleGate allow={["staff", "assistant_manager", "manager"]}>
-      <div className="space-y-6">
+      <div className="space-y-6 p-4 md:p-6">
         <h1 className="text-2xl font-semibold">Welcome Staff Dashboard</h1>
+        
+        {/* Daily Quote */}
+        <DailyQuote />
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <section className="rounded-lg border p-4">
