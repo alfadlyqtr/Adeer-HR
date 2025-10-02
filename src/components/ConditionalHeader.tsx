@@ -45,7 +45,7 @@ export default function ConditionalHeader() {
     <header className="sticky top-0 z-20 border-b border-black/5 bg-white/60 backdrop-blur supports-[backdrop-filter]:bg-white/50 dark:border-white/10 dark:bg-black/40">
       <div className="container-app flex items-center justify-between gap-3 py-3">
         <Link href="/" className="flex items-center gap-3">
-          <Image src="/logo/adeer-logo.svg" alt="Adeer HR" width={36} height={36} />
+          <Image src="/logo/adeer logo.png" alt="Adeer HR" width={40} height={40} className="rounded-md" />
           <span className="text-lg font-semibold tracking-tight">Adeer HR</span>
         </Link>
 

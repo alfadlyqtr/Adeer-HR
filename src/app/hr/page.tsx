@@ -3,6 +3,7 @@ import RoleGate from "@/components/RoleGate";
 import CEOSnapshot from "@/components/CEOSnapshot";
 import CEOBroadcast from "@/components/CEOBroadcast";
 import DailyQuote from "@/components/DailyQuote";
+import SettingsButton from "@/components/SettingsButton";
 import StaffCard from "@/components/staff/StaffCard";
 import StaffDetailsModal from "@/components/staff/StaffDetailsModal";
 import NewStaffModal, { NewStaffPayload } from "@/components/staff/NewStaffModal";
@@ -789,6 +790,7 @@ export default function HRDashboard() {
 
           </h1>
 
+          <SettingsButton />
           </div>
 
         {/* Daily Quote */}
@@ -1366,7 +1368,7 @@ export default function HRDashboard() {
         {confirmModal.open && (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
             <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmModal({ open: false })} />
-            <div className="relative z-10 w-[min(460px,95vw)] rounded-xl border bg-white p-4 shadow-xl dark:bg-black">
+            <div className="relative z-10 w-[min(460px,95vw)] rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-4 shadow-xl dark:bg-black">
               <h3 className="mb-2 text-base font-semibold">Please confirm</h3>
               <p className="mb-4 text-sm">
                 {confirmModal.action === 'delete' && (

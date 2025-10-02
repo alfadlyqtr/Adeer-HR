@@ -1,6 +1,7 @@
 "use client";
 import RoleGate from "@/components/RoleGate";
 import DailyQuote from "@/components/DailyQuote";
+import SettingsButton from "@/components/SettingsButton";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useUserRole } from "@/hooks/useUserRole";
@@ -167,7 +168,10 @@ export default function ManagerDashboard() {
   return (
     <RoleGate allow={["manager", "assistant_manager", "hr", "ceo"]}>
       <div className="space-y-6 p-4 md:p-6">
-        <h1 className="text-2xl font-semibold">Welcome Manager Dashboard</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">Welcome Manager Dashboard</h1>
+          <SettingsButton />
+        </div>
         
         {/* Daily Quote */}
         <DailyQuote />
@@ -280,13 +284,12 @@ export default function ManagerDashboard() {
               </div>
               <div className="flex-1 min-w-[240px]">
                 <label className="mb-1 block text-xs">Reason</label>
-                <input value={warnReason} onChange={(e) => setWarnReason(e.target.value)} placeholder="Reason for warning" className="w-full rounded-md border px-3 py-2" />
+                <input value={warnReason} onChange={(e) => setWarnReason(e.target.value)} placeholder="Reason for warning" className="w-full rounded-md border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5" />
               </div>
               <button type="submit" disabled={isAssistant} className="rounded-md bg-rose-600 px-4 py-2 text-white disabled:opacity-50">Send Warning</button>
             </form>
           </section>
         </div>
-
         {err && <p className="text-sm text-rose-600">{err}</p>}
         {okMsg && <p className="text-sm text-emerald-600">{okMsg}</p>}
       </div>

@@ -1,6 +1,7 @@
 "use client";
 import RoleGate from "@/components/RoleGate";
 import DailyQuote from "@/components/DailyQuote";
+import SettingsButton from "@/components/SettingsButton";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -236,7 +237,10 @@ export default function StaffDashboard() {
   return (
     <RoleGate allow={["staff", "assistant_manager", "manager"]}>
       <div className="space-y-6 p-4 md:p-6">
-        <h1 className="text-2xl font-semibold">Welcome Staff Dashboard</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">Welcome Staff Dashboard</h1>
+          <SettingsButton />
+        </div>
         
         {/* Daily Quote */}
         <DailyQuote />
@@ -313,7 +317,7 @@ export default function StaffDashboard() {
             ) : (
               <ul className="text-sm">
                 {timeline.map((t, i) => (
-                  <li key={i} className="flex items-center justify-between border-b py-1 last:border-b-0">
+                  <li key={i} className="flex items-center justify-between border-b border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 last:border-b-0">
                     <span className="capitalize">{t.type.replace("_", " ")}</span>
                     <span className="tabular-nums text-gray-600 dark:text-gray-300">{new Date(t.ts).toLocaleTimeString()}</span>
                   </li>

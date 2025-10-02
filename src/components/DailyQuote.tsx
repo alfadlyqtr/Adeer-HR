@@ -45,10 +45,10 @@ export default function DailyQuote() {
   const initialIndex = Math.abs(new Date().getUTCMinutes()) % quotes.length;
 
   return (
-    <div className="rounded-xl border border-white/10 bg-gradient-to-br from-brand-light/10 via-purple-50/50 to-white/50 p-4 shadow-sm dark:from-brand-darkPurple/10 dark:via-purple-950/30 dark:to-black/20">
+    <div className="rounded-xl border border-gray-200 bg-gradient-to-br from-purple-50 via-blue-50 to-white p-4 shadow-md dark:border-white/10 dark:from-brand-darkPurple/10 dark:via-purple-950/30 dark:to-black/20">
       <div className="flex items-center gap-2 mb-3">
         <span className="text-xl">💡</span>
-        <h3 className="text-sm font-semibold">Daily Inspiration</h3>
+        <h3 className="text-sm font-semibold text-gray-800 dark:text-white">Daily Inspiration</h3>
       </div>
       <QuotesRotator quotes={quotes} initialIndex={initialIndex} showRefresh={true} />
     </div>

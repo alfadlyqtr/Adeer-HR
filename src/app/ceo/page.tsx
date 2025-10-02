@@ -4,6 +4,7 @@ import RoleGate from "@/components/RoleGate";
 import CEOSnapshot from "@/components/CEOSnapshot";
 import CEOBroadcast from "@/components/CEOBroadcast";
 import DailyQuote from "@/components/DailyQuote";
+import SettingsButton from "@/components/SettingsButton";
 import { supabase } from "@/lib/supabaseClient";
 
 /**
@@ -566,6 +567,7 @@ export default function CEODashboardPage() {
           </h1>
           
           <div className="flex items-center gap-2">
+            <SettingsButton />
             <button onClick={() => logAttendance("check_in")} className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm text-white transition hover:scale-105 hover:shadow-lg">Punch In</button>
             <button onClick={() => logAttendance("check_out")} className="rounded-md bg-rose-500 px-3 py-1.5 text-sm text-white transition hover:scale-105 hover:shadow-lg">Punch Out</button>
           </div>
@@ -575,18 +577,18 @@ export default function CEODashboardPage() {
         <DailyQuote />
 
         {/* Filters Bar */}
-        <div className="flex flex-wrap items-end gap-3 rounded-xl border border-white/10 bg-white/5 p-3">
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
           <div className="flex flex-col">
             <label className="text-xs opacity-70">From</label>
-            <input type="date" value={dateFrom} onChange={(e)=>setDateFrom(e.target.value)} className="rounded-md border border-white/10 bg-white/5 p-1.5 text-sm" />
+            <input type="date" value={dateFrom} onChange={(e)=>setDateFrom(e.target.value)} className="rounded-md border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-1.5 text-sm" />
           </div>
           <div className="flex flex-col">
             <label className="text-xs opacity-70">To</label>
-            <input type="date" value={dateTo} onChange={(e)=>setDateTo(e.target.value)} className="rounded-md border border-white/10 bg-white/5 p-1.5 text-sm" />
+            <input type="date" value={dateTo} onChange={(e)=>setDateTo(e.target.value)} className="rounded-md border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-1.5 text-sm" />
           </div>
           <div className="flex flex-col">
             <label className="text-xs opacity-70">Role</label>
-            <select value={roleFilter} onChange={(e)=>setRoleFilter(e.target.value)} className="rounded-md border border-white/10 bg-white/5 p-1.5 text-sm">
+            <select value={roleFilter} onChange={(e)=>setRoleFilter(e.target.value)} className="rounded-md border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-1.5 text-sm">
               <option value="all">All</option>
               <option value="hr">HR</option>
               <option value="manager">Manager</option>
@@ -596,7 +598,7 @@ export default function CEODashboardPage() {
           </div>
           <div className="flex flex-col">
             <label className="text-xs opacity-70">Department</label>
-            <select value={departmentFilter} onChange={(e)=>setDepartmentFilter(e.target.value)} className="rounded-md border border-white/10 bg-white/5 p-1.5 text-sm">
+            <select value={departmentFilter} onChange={(e)=>setDepartmentFilter(e.target.value)} className="rounded-md border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-1.5 text-sm">
               <option value="all">All</option>
               <option value="operations">Operations</option>
               <option value="sales">Sales</option>
@@ -610,7 +612,7 @@ export default function CEODashboardPage() {
         </div>
 
         {/* Tabs */}
-        <nav className="flex gap-2 overflow-x-auto rounded-xl border border-white/10 bg-white/5 p-1 text-sm backdrop-blur-md" aria-label="Sections">
+        <nav className="flex gap-2 overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-1 text-sm backdrop-blur-md" aria-label="Sections">
           <button onClick={() => setTab("overview")} className={`rounded-lg px-3 py-1.5 transition-all duration-200 whitespace-nowrap ${tab === "overview" ? activeTabClass : inactiveTabClass}`}>📊 Overview</button>
           <button onClick={() => setTab("staff")} className={`rounded-lg px-3 py-1.5 transition-all duration-200 whitespace-nowrap ${tab === "staff" ? activeTabClass : inactiveTabClass}`}>👥 Staff & Teams</button>
           <button onClick={() => setTab("attendance")} className={`rounded-lg px-3 py-1.5 transition-all duration-200 whitespace-nowrap ${tab === "attendance" ? activeTabClass : inactiveTabClass}`}>⏰ Attendance & Shifts</button>
@@ -628,12 +630,12 @@ export default function CEODashboardPage() {
         {tab === "overview" && (
           <div className="space-y-6">
             {/* CEO Broadcast */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <CEOBroadcast />
             </section>
 
             {/* Executive Snapshot */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-medium">Executive Snapshot</h2>
                 <button onClick={refreshOverview} className="text-xs text-brand-primary hover:underline">Refresh</button>
@@ -642,22 +644,22 @@ export default function CEODashboardPage() {
             </section>
 
             {/* KPI Cards */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Key Performance Indicators</h2>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Attendance %</div>
                   <div className="mt-1 text-2xl font-semibold">{attendancePct ?? "—"}{attendancePct !== null ? "%" : ""}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Avg Overtime / Staff (h)</div>
                   <div className="mt-1 text-2xl font-semibold">{avgOvertimePerStaff ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Absenteeism Rate</div>
                   <div className="mt-1 text-2xl font-semibold">{absenteeismRate ?? "—"}{absenteeismRate !== null ? "%" : ""}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Policy Violations</div>
                   <div className="mt-1 text-2xl font-semibold">{violationsCount ?? "—"}</div>
                 </div>
@@ -665,22 +667,22 @@ export default function CEODashboardPage() {
             </section>
 
             {/* Staff & Teams Summary */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Staff & Teams Summary</h2>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Total Staff</div>
                   <div className="mt-1 text-2xl font-semibold">{staffTotals?.total ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Active Now</div>
                   <div className="mt-1 text-2xl font-semibold text-emerald-400">{staffTotals?.active ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Inactive</div>
                   <div className="mt-1 text-2xl font-semibold text-rose-400">{staffTotals?.inactive ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Teams</div>
                   <div className="mt-1 text-2xl font-semibold">{teamsData.length}</div>
                 </div>
@@ -688,26 +690,26 @@ export default function CEODashboardPage() {
             </section>
 
             {/* Leave & Warnings Summary */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Leave & Warnings Summary</h2>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Leaves Approved</div>
                   <div className="mt-1 text-2xl font-semibold text-emerald-400">{leaveSummary?.approved ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Leaves Pending</div>
                   <div className="mt-1 text-2xl font-semibold text-yellow-400">{leaveSummary?.pending ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Leaves Rejected</div>
                   <div className="mt-1 text-2xl font-semibold text-rose-400">{leaveSummary?.rejected ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Warnings (Current)</div>
                   <div className="mt-1 text-2xl font-semibold">{warningsSummary?.total ?? "—"}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">vs Previous Period</div>
                   <div className="mt-1 text-2xl font-semibold">{warningsSummary?.lastPeriod ?? "—"}</div>
                 </div>
@@ -720,7 +722,7 @@ export default function CEODashboardPage() {
             </section>
 
             {/* At-Risk Staff */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">At-Risk Staff</h2>
               {riskList.length === 0 ? (
                 <p className="text-sm opacity-70">No risk highlights.</p>
@@ -741,7 +743,7 @@ export default function CEODashboardPage() {
             </section>
 
             {/* Current Staff Status */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Current Staff Status</h2>
               {inout.length === 0 ? <p className="text-sm opacity-70">No data.</p> : (
                 <div className="space-y-1 text-sm">
@@ -770,7 +772,7 @@ export default function CEODashboardPage() {
         {/* ===== STAFF & TEAMS TAB ===== */}
         {tab === "staff" && (
           <div className="space-y-6">
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">All Staff ({staffList.length})</h2>
               {staffList.length === 0 ? (
                 <p className="text-sm opacity-70">No staff data.</p>
@@ -800,14 +802,14 @@ export default function CEODashboardPage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Teams ({teamsData.length})</h2>
               {teamsData.length === 0 ? (
                 <p className="text-sm opacity-70">No teams data.</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {teamsData.map((t: any) => (
-                    <div key={t.id} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <div key={t.id} className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                       <div className="font-medium">{t.name}</div>
                       <div className="text-xs opacity-70 mt-1">Team ID: {t.id}</div>
                     </div>
@@ -855,7 +857,7 @@ export default function CEODashboardPage() {
         {/* ===== ATTENDANCE & SHIFTS TAB ===== */}
         {tab === "attendance" && (
           <div className="space-y-6">
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Weekly Attendance Trends</h2>
               {weeklyTrends.length === 0 ? (
                 <p className="text-sm opacity-70">No trend data.</p>
@@ -878,7 +880,7 @@ export default function CEODashboardPage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Lateness Heatmap</h2>
               {latenessHeatmap.length === 0 ? (
                 <p className="text-sm opacity-70">No heatmap data.</p>
@@ -916,7 +918,7 @@ export default function CEODashboardPage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Overtime Summary</h2>
               {overtimeData.length === 0 ? (
                 <p className="text-sm opacity-70">No overtime data.</p>
@@ -944,14 +946,14 @@ export default function CEODashboardPage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Shift Coverage (Today)</h2>
               {shiftCoverage.length === 0 ? (
                 <p className="text-sm opacity-70">No shift coverage data.</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {shiftCoverage.map((sc: any, i: number) => (
-                    <div key={i} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <div key={i} className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                       <div className="font-medium">{sc.shift_name}</div>
                       <div className="text-sm opacity-70 mt-1">Scheduled: {sc.scheduled} | Showed: {sc.showed}</div>
                     </div>
@@ -965,7 +967,7 @@ export default function CEODashboardPage() {
         {/* ===== LEAVE & WARNINGS TAB ===== */}
         {tab === "leave" && (
           <div className="space-y-6">
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Leave Requests ({leaveDetails.length})</h2>
               {leaveDetails.length === 0 ? (
                 <p className="text-sm opacity-70">No leave requests.</p>
@@ -1005,7 +1007,7 @@ export default function CEODashboardPage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Warnings ({warningsDetails.length})</h2>
               {warningsDetails.length === 0 ? (
                 <p className="text-sm opacity-70">No warnings.</p>
@@ -1040,7 +1042,7 @@ export default function CEODashboardPage() {
         {/* ===== REPORTS TAB ===== */}
         {tab === "reports" && (
           <div className="space-y-6">
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Export Reports</h2>
               <div className="flex flex-wrap gap-3">
                 <button onClick={() => window.print()} className="flex items-center gap-2 rounded-md border border-brand-primary bg-brand-primary/10 px-4 py-2 text-brand-primary transition hover:bg-brand-primary/20">
@@ -1057,7 +1059,7 @@ export default function CEODashboardPage() {
               </div>
             </section>
 
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Weekly Trends</h2>
               {weeklyTrends.length === 0 ? (
                 <p className="text-sm opacity-70">No trend data.</p>
@@ -1080,7 +1082,7 @@ export default function CEODashboardPage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Lateness Heatmap</h2>
               {latenessHeatmap.length === 0 ? (
                 <p className="text-sm opacity-70">No heatmap data.</p>
@@ -1123,7 +1125,7 @@ export default function CEODashboardPage() {
         {/* ===== STAFF CARDS TAB ===== */}
         {tab === "cards" && (
           <div className="space-y-6">
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Staff Cards Overview ({staffCards.length})</h2>
               {staffCards.length === 0 ? (
                 <p className="text-sm opacity-70">No staff cards data.</p>
@@ -1181,26 +1183,26 @@ export default function CEODashboardPage() {
             </section>
 
             {/* Summary Stats */}
-            <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
               <h2 className="text-lg font-medium mb-4">Cards Summary</h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Total Staff</div>
                   <div className="mt-1 text-2xl font-semibold">{staffCards.length}</div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Currently Active</div>
                   <div className="mt-1 text-2xl font-semibold text-emerald-400">
                     {staffCards.filter((c: any) => c.onClock).length}
                   </div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">With ID Cards</div>
                   <div className="mt-1 text-2xl font-semibold">
                     {staffCards.filter((c: any) => c.has_card).length}
                   </div>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3">
                   <div className="text-xs opacity-70">Total Warnings</div>
                   <div className="mt-1 text-2xl font-semibold text-rose-400">
                     {staffCards.reduce((sum: number, c: any) => sum + c.warnings_count, 0)}
@@ -1213,7 +1215,7 @@ export default function CEODashboardPage() {
 
         {/* ===== BROADCAST MESSAGE TAB ===== */}
         {tab === "message" && (
-          <section className="rounded-xl border border-brand-primary/20 bg-white/5 p-4 shadow-lg">
+          <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-medium">Company Broadcast</h2>
               <button onClick={loadCeoMessage} className="text-xs text-brand-primary hover:underline">Load current</button>
@@ -1223,14 +1225,14 @@ export default function CEODashboardPage() {
               value={ceoMsgDraft}
               onChange={(e) => setCeoMsgDraft(e.target.value)}
               placeholder="Type your message to all staff..."
-              className="min-h-[140px] w-full rounded-lg border border-white/10 bg-white/5 p-3 focus:border-brand-primary focus:ring-brand-primary"
+              className="min-h-[140px] w-full rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-3 focus:border-brand-primary focus:ring-brand-primary"
             />
             <div className="mt-3 flex items-center gap-2">
               <button onClick={saveCeoMessage} disabled={saving || !ceoMsgDraft.trim()} className="rounded-md bg-brand-primary px-4 py-2 text-white transition hover:scale-105 disabled:opacity-60">{saving ? 'Saving…' : 'Save Broadcast'}</button>
             </div>
             <div className="mt-4">
               <h3 className="mb-1 text-sm font-semibold">Preview</h3>
-              <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="relative overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-4">
                 <div className="flex items-center gap-2">
                   <span className="text-2xl">🏆</span>
                   <h4 className="text-base font-semibold">CEO Message</h4>
