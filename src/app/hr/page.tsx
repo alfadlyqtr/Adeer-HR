@@ -962,9 +962,24 @@ export default function HRDashboard() {
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-lg font-medium">Users</h2>
               <div className="flex items-center gap-2">
-                <button onClick={refreshUserRoles} className="rounded-md border px-2 py-1 text-xs">Refresh Roles</button>
-                <button onClick={syncAuthUsers} className="rounded-md border px-2 py-1 text-xs">Sync Auth Users</button>
-                <button onClick={() => setOpenNewStaff(true)} className={`rounded-md px-3 py-1.5 text-xs ${goldMode && role === 'ceo' ? 'bg-[#D4AF37] text-black hover:bg-[#c6a232]' : 'bg-brand-primary text-white hover:bg-brand-primary/90'}`}>Invite New Staff</button>
+                <button
+                  onClick={refreshUserRoles}
+                  className="inline-flex items-center rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-gray-50 dark:border-white/10 dark:bg-white/5"
+                >
+                  Refresh Roles
+                </button>
+                <button
+                  onClick={syncAuthUsers}
+                  className="inline-flex items-center rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-gray-50 dark:border-white/10 dark:bg-white/5"
+                >
+                  Sync Auth Users
+                </button>
+                <button
+                  onClick={() => setOpenNewStaff(true)}
+                  className={`inline-flex items-center rounded-md px-3 py-2 text-xs font-medium shadow-sm ${goldMode && role === 'ceo' ? 'bg-[#D4AF37] text-black hover:bg-[#c6a232]' : 'bg-brand-primary text-white hover:bg-brand-primary/90'}`}
+                >
+                  Create New Staff
+                </button>
               </div>
             </div>
             <form onSubmit={createBasicUser} className="mb-3 flex flex-wrap items-end gap-2 text-sm">
@@ -982,8 +997,7 @@ export default function HRDashboard() {
                   <option value="ceo">ceo</option>
                 </select>
               </div>
-              <button type="submit" className="rounded-md bg-brand-primary px-3 py-2 text-white">Add</button>
-              <button type="button" onClick={() => inviteUserByEmail(newUser?.email ?? "")} className="rounded-md border px-3 py-2">Send Invite</button>
+              <button type="submit" className="rounded-md bg-brand-primary px-3 py-2 text-white shadow-sm hover:bg-brand-primary/90">Add</button>
             </form>
             <div className="max-h-64 overflow-auto rounded-md border">
               <table className="w-full text-left text-sm">

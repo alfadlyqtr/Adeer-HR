@@ -21,20 +21,51 @@ export default function DashboardRedirect() {
           return;
         }
 
-        // Resolve role via RPC (source: public.user_roles)
+        // Fast path: if we cached a role, route immediately (verify in background)
         let role: string | null = null;
-        let tries = 0;
-        while (active && tries < 4 && !role) {
-          const { data, error: rpcErr } = await supabase.rpc("fn_current_role");
-          if (rpcErr) console.warn("/dashboard rpc error", rpcErr);
-          role = (data as string | null) ?? null;
-          if (!role) await new Promise((r) => setTimeout(r, 50 + tries * tries * 50));
-          tries++;
+        const cachedRole = typeof window !== 'undefined' ? (localStorage.getItem('adeer.role') || null) : null;
+        if (cachedRole) {
+          role = cachedRole;
+          // route immediately
+          if (role === "ceo") router.replace("/ceo");
+          else if (role === "hr") router.replace("/hr");
+          else if (role === "manager" || role === "assistant_manager") router.replace("/manager");
+          else router.replace("/staff");
+          // continue resolving in background, but don't block UI
+        }
+
+        // Resolve role via RPC with overall timeout and fallbacks
+        if (!role) {
+          let tries = 0;
+          const start = Date.now();
+          while (active && tries < 4 && !role) {
+            const timeoutMs = 1200 + tries * 200;
+            const result: any = await Promise.race([
+              supabase.rpc('fn_current_role'),
+              new Promise((resolve) => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), timeoutMs)),
+            ]);
+            if (result?.error) console.warn('/dashboard rpc error', result.error);
+            role = (result?.data as string | null) ?? null;
+            if (role) break;
+            if (Date.now() - start > 5000) break;
+            await new Promise((r) => setTimeout(r, 50 + tries * tries * 50));
+            tries++;
+          }
         }
 
         if (!active) return;
+        // Fallback 1: central table read
         if (!role) {
-          // last-ditch: read public.users and STAMP user_roles accordingly
+          const fb = await supabase
+            .from('user_roles')
+            .select('role')
+            .eq('user_id', session.user.id)
+            .maybeSingle();
+          if (fb?.data?.role) role = fb.data.role as string;
+        }
+
+        // Fallback 2: legacy users table then stamp into central
+        if (!role) {
           const { data: legacy, error: legErr } = await supabase
             .from("users")
             .select("role")
@@ -43,7 +74,6 @@ export default function DashboardRedirect() {
           if (legErr) console.warn("/dashboard legacy users read error", legErr);
           const legacyRole = (legacy?.role as string | undefined) ?? null;
           if (legacyRole) {
-            // stamp into central table so future checks are deterministic
             const { error: upErr } = await supabase
               .from("user_roles")
               .upsert({ user_id: session.user.id, role: legacyRole });
@@ -63,6 +93,9 @@ export default function DashboardRedirect() {
         else if (role === "hr") router.replace("/hr");
         else if (role === "manager" || role === "assistant_manager") router.replace("/manager");
         else router.replace("/staff");
+
+        // Cache for faster subsequent redirects
+        try { if (typeof window !== 'undefined') localStorage.setItem('adeer.role', role); } catch {}
       } finally {
         setLoading(false);
       }

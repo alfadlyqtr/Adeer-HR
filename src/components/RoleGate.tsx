@@ -27,39 +27,49 @@ export default function RoleGate({ allow, children }: { allow: Role[]; children:
         router.replace("/login");
         return;
       }
-      // Resolve role via RPC to avoid RLS timing issues
+      // Resolve role without RPC: read from central table with timeout, then fallback to legacy users
       let role: Role | null = null;
-      let tries = 0;
       const start = Date.now();
-      while (mounted && tries < 4 && !role) {
-        // Race the RPC against a short timeout so we never hang indefinitely
-        const timeoutMs = 1200 + tries * 200;
-        const result: any = await Promise.race([
-          supabase.rpc('fn_current_role'),
-          new Promise((resolve) => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), timeoutMs)),
-        ]);
-        if (result?.error) console.warn('RoleGate: rpc error', result.error);
-        role = (result?.data as Role | null) ?? null;
-        if (role) break;
-        // Overall guard to prevent hanging
-        if (Date.now() - start > 5000) break;
-        await new Promise((r) => setTimeout(r, 50 + tries * tries * 50));
-        tries++;
-      }
-      if (!mounted) return;
-      // Fallback: query public.user_roles if RPC did not yield a role
-      if (!role && session.user?.id) {
+      if (session.user?.id) {
         try {
-          const fb = await supabase
+          const fb = await Promise.race([
+            supabase
             .from('user_roles')
             .select('role')
             .eq('user_id', session.user.id)
-            .maybeSingle();
+            .maybeSingle(),
+            new Promise((resolve) => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 1500)),
+          ]) as any;
           const r = (fb?.data as any)?.role as Role | undefined;
           if (r) role = r;
         } catch (e) {
-          console.warn('RoleGate: fallback user_roles query failed', e);
+          console.warn('RoleGate: user_roles query failed', e);
         }
+      }
+      if (!mounted) return;
+      // Legacy fallback: public.users
+      if (!role && session.user?.id) {
+        try {
+          const leg = await Promise.race([
+            supabase
+              .from('users')
+              .select('role')
+              .eq('id', session.user.id)
+              .maybeSingle(),
+            new Promise((resolve) => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 1500)),
+          ]) as any;
+          const r = (leg?.data as any)?.role as Role | undefined;
+          if (r) role = r;
+        } catch (e) {
+          console.warn('RoleGate: legacy users read failed', e);
+        }
+      }
+      // Guard: if overall time exceeded, stop trying further
+      if (!role && Date.now() - start > 5000) {
+        setOk(false);
+        setResolving(false);
+        router.replace('/dashboard');
+        return;
       }
       if (!role) {
         // Could not resolve role after retries/fallback: go to central redirector

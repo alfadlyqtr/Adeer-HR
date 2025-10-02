@@ -42,7 +42,7 @@ export async function POST(req: Request) {
       email,
       password: tempPassword,
       email_confirm: true,
-      user_metadata: { full_name: fullName || null }
+      user_metadata: { full_name: fullName || null, must_change_password: true }
     });
     if (createErr) {
       return NextResponse.json({ error: createErr.message }, { status: 400 });
