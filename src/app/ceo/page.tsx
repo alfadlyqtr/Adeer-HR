@@ -5,6 +5,8 @@ import CEOSnapshot from "@/components/CEOSnapshot";
 import CEOBroadcast from "@/components/CEOBroadcast";
 import DailyQuote from "@/components/DailyQuote";
 import SettingsButton from "@/components/SettingsButton";
+import StaffCard from "@/components/staff/StaffCard";
+import StaffDetailsModal from "@/components/staff/StaffDetailsModal";
 import { supabase } from "@/lib/supabaseClient";
 
 /**
@@ -42,6 +44,8 @@ export default function CEODashboardPage() {
   
   // Staff Cards
   const [staffCards, setStaffCards] = useState<any[]>([]);
+  const [openStaffModal, setOpenStaffModal] = useState(false);
+  const [activeStaff, setActiveStaff] = useState<any | null>(null);
   
   // Attendance & Shifts
   const [weeklyTrends, setWeeklyTrends] = useState<any[]>([]);
@@ -400,18 +404,20 @@ export default function CEODashboardPage() {
   // --- Staff Cards Tab Loader ---
   async function loadStaffCardsData() {
     try {
-      const [usersRes, filesRes, warnsRes, statusRes, cardsRes] = await Promise.all([
-        supabase.from("users").select("id,email,full_name").order("email"),
+      const [usersRes, filesRes, warnsRes, statusRes, cardsRes, rolesRes] = await Promise.all([
+        supabase.from("users").select("id,email,full_name,role").order("email"),
         supabase.from("staff_files").select("user_id"),
         supabase.from("warnings").select("user_id"),
         supabase.from("v_current_status").select("user_id,status,last_event,last_ts"),
-        supabase.from("staff_cards").select("user_id,card_url,created_at")
+        supabase.from("staff_cards").select("user_id,card_url,avatar_url,created_at"),
+        supabase.from("user_roles").select("user_id,role")
       ]);
       const users = usersRes.data ?? [];
       const files = filesRes.data ?? [];
       const warns = warnsRes.data ?? [];
       const stats = statusRes.data ?? [];
       const cards = cardsRes.data ?? [];
+      const roles = rolesRes.data ?? [];
       const fileCount: Record<string, number> = {};
       files.forEach((r: any) => { fileCount[r.user_id] = (fileCount[r.user_id] || 0) + 1; });
       const warnCount: Record<string, number> = {};
@@ -420,6 +426,8 @@ export default function CEODashboardPage() {
       stats.forEach((r: any) => { statusMap[r.user_id] = r; });
       const cardMap: Record<string, any> = {};
       cards.forEach((r: any) => { cardMap[r.user_id] = r; });
+      const roleMap: Record<string, string> = {};
+      roles.forEach((r: any) => { roleMap[r.user_id] = r.role; });
       const merged = users.map((u: any) => {
         const st = statusMap[u.id] || {};
         const s = (st.status ?? st.last_event ?? "")?.toString().toLowerCase();
@@ -428,6 +436,7 @@ export default function CEODashboardPage() {
           user_id: u.id,
           name: u.full_name || u.email || u.id,
           email: u.email,
+          role: roleMap[u.id] || u.role || "staff",
           docs_count: fileCount[u.id] || 0,
           warnings_count: warnCount[u.id] || 0,
           status: st.status ?? st.last_event ?? "—",
@@ -435,6 +444,7 @@ export default function CEODashboardPage() {
           onClock,
           has_card: !!cardMap[u.id],
           card_url: cardMap[u.id]?.card_url || null,
+          avatar_url: cardMap[u.id]?.avatar_url || null,
         };
       });
       setStaffCards(merged);
@@ -1126,59 +1136,37 @@ export default function CEODashboardPage() {
         {tab === "cards" && (
           <div className="space-y-6">
             <section className="rounded-xl border border-gray-200 bg-white shadow-lg dark:border-brand-primary/20 dark:bg-white/5 p-4">
-              <h2 className="text-lg font-medium mb-4">Staff Cards Overview ({staffCards.length})</h2>
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-medium">Staff Cards ({staffCards.length})</h2>
+                <button onClick={loadStaffCardsData} className="text-xs text-brand-primary hover:underline">Refresh</button>
+              </div>
               {staffCards.length === 0 ? (
-                <p className="text-sm opacity-70">No staff cards data.</p>
+                <p className="text-sm opacity-70">No staff found.</p>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {staffCards.map((card: any) => (
-                    <div key={card.user_id} className={`rounded-lg border p-4 ${
-                      card.onClock ? "border-emerald-500/30 bg-emerald-500/5" : "border-white/10 bg-white/5"
-                    }`}>
-                      <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <h3 className="font-semibold">{card.name}</h3>
-                          <p className="text-xs opacity-70">{card.email}</p>
-                        </div>
-                        <span className={`inline-block px-2 py-0.5 rounded text-xs ${
-                          card.onClock ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
-                        }`}>
-                          {card.status}
-                        </span>
-                      </div>
-                      
-                      <div className="space-y-2 text-sm">
-                        <div className="flex justify-between">
-                          <span className="opacity-70">Documents:</span>
-                          <span className="font-medium">{card.docs_count}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="opacity-70">Warnings:</span>
-                          <span className={`font-medium ${card.warnings_count > 0 ? "text-rose-400" : ""}`}>
-                            {card.warnings_count}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="opacity-70">ID Card:</span>
-                          <span className="font-medium">
-                            {card.has_card ? (
-                              <a href={card.card_url} target="_blank" rel="noopener noreferrer" className="text-brand-primary hover:underline">
-                                View
-                              </a>
-                            ) : (
-                              "—"
-                            )}
-                          </span>
-                        </div>
-                        {card.last_ts && (
-                          <div className="text-xs opacity-70 mt-2">
-                            Last activity: {new Date(card.last_ts).toLocaleString()}
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+                  {staffCards.map((r: any) => (
+                    <li key={r.user_id}>
+                      <StaffCard
+                        staff={{
+                          id: r.user_id,
+                          full_name: r.name,
+                          title: null,
+                          team: null,
+                          avatar_url: r.avatar_url ?? null,
+                          role: r.role ?? "staff",
+                          status: r.status ?? null,
+                          today_check_in: null,
+                          today_check_out: null,
+                          warnings_count: r.warnings_count ?? 0,
+                        }}
+                        onShowMore={(id) => {
+                          setActiveStaff({ id, full_name: r.name, title: null, team: null, avatar_url: null });
+                          setOpenStaffModal(true);
+                        }}
+                      />
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
             </section>
 
@@ -1242,6 +1230,8 @@ export default function CEODashboardPage() {
             </div>
           </section>
         )}
+
+        <StaffDetailsModal open={openStaffModal} onClose={() => setOpenStaffModal(false)} staff={activeStaff} />
       </div>
     </RoleGate>
   );

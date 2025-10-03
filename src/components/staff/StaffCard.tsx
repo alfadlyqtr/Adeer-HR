@@ -9,6 +9,7 @@ export type StaffSummary = {
   title: string | null;
   team: string | null;
   avatar_url: string | null;
+  role?: string | null;
   // lightweight summary stats for the back face
   status?: string | null;
   today_check_in?: string | null;
@@ -21,6 +22,7 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
 
   const handleFlip = () => setFlipped(v => !v);
 
+  // Use uploaded avatar from staff_cards table, fallback to staff.avatar_url, then placeholder
   const avatarSrc = staff.avatar_url || "/staff/placeholder.svg";
 
   return (
@@ -31,7 +33,7 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
           {/* Top brand bar */}
           <div className="flex items-center justify-between bg-[#0e1a2b] px-3 py-2 text-white">
             <div className="flex items-center gap-2">
-              <Image src="/logo/adeer-logo.svg" alt="Brand" width={18} height={18} />
+              <Image src="/logo/adeer logo.png" alt="Brand" width={18} height={18} />
               <span className="text-[11px] opacity-90">ADEER HR</span>
             </div>
             <span className="text-[10px] opacity-80">ID: {staff.id.slice(0, 8)}</span>
@@ -50,7 +52,7 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
           <div className="px-3 pb-3 pt-2">
             <div className="text-center text-lg font-extrabold tracking-wide">{staff.full_name ?? "Unnamed"}</div>
             <div className="mt-1 flex items-center justify-center gap-2 text-xs">
-              <span className="rounded bg-[#2c7db6] px-2 py-0.5 text-white">{(staff.title || "Staff").toString()}</span>
+              <span className="rounded bg-[#2c7db6] px-2 py-0.5 text-white uppercase">{(staff.role || staff.title || "Staff").toString()}</span>
               {staff.team && <span className="rounded border px-2 py-0.5 text-[11px] opacity-80">{staff.team}</span>}
             </div>
           </div>
@@ -61,7 +63,7 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
           {/* Header */}
           <div className="flex items-center justify-between bg-[#0e1a2b] px-3 py-2 text-white">
             <span className="text-[11px]">Profile Summary</span>
-            <span className="text-[10px] opacity-80">{(staff.title ?? "Staff").toString()}</span>
+            <span className="text-[10px] opacity-80 uppercase">{(staff.role || staff.title || "Staff").toString()}</span>
           </div>
           {/* Body */}
           <div className="flex-1 space-y-2 p-3 text-sm">

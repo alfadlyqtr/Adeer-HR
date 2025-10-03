@@ -10,6 +10,7 @@ export type NewStaffPayload = {
   nationality?: string;
   joiningDate?: string; // ISO date
   address?: string;
+  tempPassword?: string; // optional; if blank, backend will generate
   // Document numbers/dates
   passportNumber?: string;
   passportIssueDate?: string;
@@ -47,6 +48,8 @@ export function NewStaffModal({
   const [tab, setTab] = useState<"documents" | "details">("documents");
   const [saving, setSaving] = useState(false);
   const [data, setData] = useState<NewStaffPayload>({});
+  const genTemp = () => `Adeer-${Math.random().toString(36).slice(2,8)}-2025`;
+  const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); } catch {} };
 
   useEffect(() => {
     if (!open) {
@@ -131,6 +134,14 @@ export function NewStaffModal({
               <div>
                 <label className="mb-1 block text-xs">Phone</label>
                 <input value={data.phone ?? ""} onChange={(e)=>setData(d=>({...d, phone: e.target.value}))} className="w-full rounded-md border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs">Temporary Password (optional)</label>
+                <div className="flex gap-2">
+                  <input value={data.tempPassword ?? ""} onChange={(e)=>setData(d=>({...d, tempPassword: e.target.value}))} className="w-full rounded-md border px-3 py-2" placeholder="Leave blank to auto-generate" />
+                  <button type="button" onClick={()=>setData(d=>({...d, tempPassword: genTemp()}))} className="rounded-md border px-2 text-xs">Generate</button>
+                  <button type="button" onClick={()=> data.tempPassword && copy(data.tempPassword)} className="rounded-md border px-2 text-xs">Copy</button>
+                </div>
               </div>
               <div>
                 <label className="mb-1 block text-xs">Role *</label>

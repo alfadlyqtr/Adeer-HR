@@ -1,5 +1,6 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
 
 export type StaffDetails = {
   id: string;
@@ -18,6 +19,10 @@ export default function StaffDetailsModal({
   onClose: () => void;
   staff: StaffDetails | null;
 }) {
+  const [uploading, setUploading] = useState(false);
+  const [cardUrl, setCardUrl] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -26,6 +31,91 @@ export default function StaffDetailsModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  // Load existing staff card data when modal opens
+  useEffect(() => {
+    if (!open || !staff) return;
+    loadStaffCard();
+  }, [open, staff]);
+
+  async function loadStaffCard() {
+    if (!staff) return;
+    try {
+      const { data } = await supabase
+        .from("staff_cards")
+        .select("card_url, avatar_url")
+        .eq("user_id", staff.id)
+        .maybeSingle();
+      
+      setCardUrl(data?.card_url || null);
+      setAvatarUrl(data?.avatar_url || staff.avatar_url || null);
+    } catch (error) {
+      console.error("Failed to load staff card:", error);
+    }
+  }
+
+  async function uploadImage(file: File, type: 'card' | 'avatar') {
+    if (!staff) return;
+    
+    setUploading(true);
+    setMessage(null);
+    
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${staff.id}_${type}_${Date.now()}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      // Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from('staff-cards')
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('staff-cards')
+        .getPublicUrl(filePath);
+
+      // Update staff_cards table
+      const updateData = type === 'card' 
+        ? { card_url: publicUrl }
+        : { avatar_url: publicUrl };
+
+      // For upsert, we need to handle the required file_url column
+      const existingCard = await supabase
+        .from("staff_cards")
+        .select("file_url")
+        .eq("user_id", staff.id)
+        .maybeSingle();
+
+      const baseData = {
+        user_id: staff.id,
+        file_url: existingCard.data?.file_url || publicUrl, // Use existing or new URL
+        updated_at: new Date().toISOString(),
+        ...updateData
+      };
+
+      const { error: dbError } = await supabase
+        .from("staff_cards")
+        .upsert(baseData, { onConflict: "user_id" });
+
+      if (dbError) throw dbError;
+
+      // Update local state
+      if (type === 'card') {
+        setCardUrl(publicUrl);
+      } else {
+        setAvatarUrl(publicUrl);
+      }
+
+      setMessage(`${type === 'card' ? 'ID Card' : 'Avatar'} uploaded successfully!`);
+    } catch (error: any) {
+      setMessage(`Upload failed: ${error.message}`);
+    } finally {
+      setUploading(false);
+    }
+  }
 
   if (!open || !staff) return null;
 
@@ -41,25 +131,95 @@ export default function StaffDetailsModal({
           <button onClick={onClose} className="rounded-md border px-3 py-1 text-sm">Close</button>
         </div>
 
-        {/* Placeholder tabbed content; wire real data next */}
+        {/* Message */}
+        {message && (
+          <div className={`mb-4 rounded-lg p-3 text-sm ${
+            message.includes('successfully') 
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-400' 
+              : 'bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-900/20 dark:text-rose-400'
+          }`}>
+            {message}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {/* ID Card Upload */}
+          <section className="rounded-lg border p-4">
+            <h4 className="mb-3 font-medium">ID Card Photo</h4>
+            {cardUrl ? (
+              <div className="mb-3">
+                <img 
+                  src={cardUrl} 
+                  alt="ID Card" 
+                  className="w-full max-w-xs rounded-lg border shadow-sm"
+                />
+              </div>
+            ) : (
+              <div className="mb-3 flex h-32 w-full max-w-xs items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 dark:border-gray-600 dark:bg-gray-800">
+                <span className="text-sm text-gray-500">No ID card uploaded</span>
+              </div>
+            )}
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) uploadImage(file, 'card');
+              }}
+              disabled={uploading}
+              className="w-full text-sm"
+            />
+          </section>
+
+          {/* Avatar Upload */}
+          <section className="rounded-lg border p-4">
+            <h4 className="mb-3 font-medium">Profile Photo</h4>
+            {avatarUrl ? (
+              <div className="mb-3">
+                <img 
+                  src={avatarUrl} 
+                  alt="Profile" 
+                  className="h-32 w-32 rounded-full border shadow-sm object-cover"
+                />
+              </div>
+            ) : (
+              <div className="mb-3 flex h-32 w-32 items-center justify-center rounded-full border-2 border-dashed border-gray-300 bg-gray-50 dark:border-gray-600 dark:bg-gray-800">
+                <span className="text-xs text-gray-500 text-center">No photo</span>
+              </div>
+            )}
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) uploadImage(file, 'avatar');
+              }}
+              disabled={uploading}
+              className="w-full text-sm"
+            />
+          </section>
+
+          {/* Documents */}
           <section className="rounded-lg border p-4">
             <h4 className="mb-2 font-medium">Documents</h4>
             <p className="text-sm opacity-70">Coming soon: staff_files list</p>
           </section>
+
+          {/* Attendance */}
           <section className="rounded-lg border p-4">
-            <h4 className="mb-2 font-medium">Attendance</h4>
+            <h4 className="mb-2 font-medium">Recent Activity</h4>
             <p className="text-sm opacity-70">Coming soon: recent check-ins/outs</p>
           </section>
-          <section className="rounded-lg border p-4">
-            <h4 className="mb-2 font-medium">Warnings</h4>
-            <p className="text-sm opacity-70">Coming soon: warnings count and list</p>
-          </section>
-          <section className="rounded-lg border p-4">
-            <h4 className="mb-2 font-medium">Notes & Reports</h4>
-            <p className="text-sm opacity-70">Coming soon: notes and report links</p>
-          </section>
         </div>
+
+        {uploading && (
+          <div className="mt-4 text-center">
+            <div className="inline-flex items-center gap-2 text-sm text-blue-600">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"></div>
+              Uploading...
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -2,6 +2,7 @@
 import RoleGate from "@/components/RoleGate";
 import DailyQuote from "@/components/DailyQuote";
 import SettingsButton from "@/components/SettingsButton";
+import CEOBroadcast from "@/components/CEOBroadcast";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -197,9 +198,10 @@ export default function StaffDashboard() {
   }
 
   async function refreshFiles(userId: string) {
+    // Select only stable columns to avoid schema mismatch errors
     const { data, error } = await supabase
       .from("staff_files")
-      .select("id, category, expiry_date, status")
+      .select("id, category, expiry_date")
       .eq("user_id", userId)
       .order("expiry_date", { ascending: true });
     if (error) { setErr(error.message); return; }
@@ -244,6 +246,9 @@ export default function StaffDashboard() {
         
         {/* Daily Quote */}
         <DailyQuote />
+
+        {/* CEO message (broadcast) */}
+        <CEOBroadcast className="brand-glow" />
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <section className="rounded-lg border p-4">
@@ -362,7 +367,6 @@ export default function StaffDashboard() {
                     <tr className="border-b">
                       <th className="py-2">Category</th>
                       <th className="py-2">Expiry</th>
-                      <th className="py-2">Status</th>
                       <th className="py-2">Alert</th>
                     </tr>
                   </thead>
@@ -375,7 +379,6 @@ export default function StaffDashboard() {
                         <tr key={f.id} className="border-b last:border-b-0">
                           <td className="py-2">{f.category}</td>
                           <td className="py-2">{exp ? exp.toLocaleDateString() : "—"}</td>
-                          <td className="py-2">{f.status ?? "—"}</td>
                           <td className="py-2 text-rose-600">{alert}</td>
                         </tr>
                       );

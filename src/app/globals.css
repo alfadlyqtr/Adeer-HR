@@ -27,6 +27,9 @@ body {
   color: var(--foreground);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Subtle page fade-in */
+  opacity: 0;
+  animation: pageFade 280ms ease-out forwards;
 }
 
 @layer components {
@@ -60,6 +63,34 @@ body {
 }
 
 @layer utilities {
+  /* Page fade-in */
+  @keyframes pageFade {
+    0% { opacity: 0; transform: translateY(4px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Smooth scroll and selection improvements */
+  html { scroll-behavior: smooth; }
+  ::selection { background: rgba(77,107,241,0.22); color: inherit; }
+
+  /* Gentle interactions for interactive elements */
+  a, button, [role="button"], .btn {
+    transition: transform 150ms ease, box-shadow 200ms ease, background-color 150ms ease, color 150ms ease, opacity 150ms ease;
+    will-change: transform, box-shadow;
+  }
+  a:hover, button:hover, [role="button"]:hover, .btn:hover {
+    transform: translateY(-1px);
+  }
+  a:active, button:active, [role="button"]:active, .btn:active {
+    transform: translateY(0);
+    filter: brightness(0.98);
+  }
+
+  /* Subtle scrollbars (supported browsers) */
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 9999px; }
+  .dark *::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); }
+
   @keyframes floaty {
     0% { transform: translateY(0px); }
     50% { transform: translateY(-4px); }

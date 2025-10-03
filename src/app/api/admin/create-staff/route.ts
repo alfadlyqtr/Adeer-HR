@@ -52,10 +52,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Failed to create auth user" }, { status: 400 });
     }
 
-    // 2) Insert minimal profile row (id, email, full_name) to avoid schema mismatches
-    const { error: usersErr } = await admin.from("users").insert({ id: uid, email, full_name: fullName || null });
+    // 2) Insert minimal profile row, handling possible schema differences
+    // Try progressively simpler payloads to avoid NOT NULL or missing column errors
+    const nameValue = fullName || email; // common schema requires `name` NOT NULL
+    let usersErr: any = null;
+    {
+      const { error } = await admin.from("users").insert({ id: uid, email, full_name: fullName || null, name: nameValue });
+      usersErr = error;
+    }
     if (usersErr) {
-      return NextResponse.json({ error: usersErr.message }, { status: 400 });
+      // Retry without full_name in case column doesn't exist
+      const { error: err2 } = await admin.from("users").insert({ id: uid, email, name: nameValue });
+      usersErr = err2;
+    }
+    if (usersErr) {
+      // Final fallback: insert minimal columns only
+      const { error: err3 } = await admin.from("users").insert({ id: uid, email });
+      if (err3) {
+        // If all attempts failed, don't block auth user creation; log and continue
+        console.warn("[create-staff] users insert failed: ", usersErr?.message || err3?.message);
+      }
     }
 
     // Optional: Best-effort update of extra fields if those columns exist in your schema
@@ -90,7 +106,7 @@ export async function POST(req: Request) {
       console.warn("user_roles upsert failed:", roleErr.message);
     }
 
-    return NextResponse.json({ ok: true, user_id: uid });
+    return NextResponse.json({ ok: true, user_id: uid, tempPassword });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }

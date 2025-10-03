@@ -58,6 +58,7 @@ export default function HRDashboard() {
   }
   const [fileMeta, setFileMeta] = useState<{ user_id: string; category: string; expiry_date?: string }>({ user_id: "", category: "" });
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [lastCreated, setLastCreated] = useState<{ email: string; tempPassword: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // Teams & Warnings
   const [teams, setTeams] = useState<any[]>([]);
@@ -91,6 +92,15 @@ export default function HRDashboard() {
   // Analytics
   const [weeklyTrends, setWeeklyTrends] = useState<any[] | null>(null);
   const [latenessHeatmap, setLatenessHeatmap] = useState<any[] | null>(null);
+
+  // Derive whether the current user is "on clock" (punched in)
+  const isOnClock = useMemo(() => {
+    if (!sessionUserId) return false;
+    const st: any = (inout || []).find((r: any) => r.user_id === sessionUserId) || null;
+    if (!st) return false;
+    const s = (st.status ?? st.last_event ?? "").toString().toLowerCase();
+    return ["present", "working", "checked_in", "in"].includes(s) || st.last_event === "check_in";
+  }, [inout, sessionUserId]);
 
   useEffect(() => {
     (async () => {
@@ -271,20 +281,24 @@ export default function HRDashboard() {
   }
 
   async function loadBranding() {
-    // Be defensive: select only the possible columns to derive key/value pairs
-    const { data } = await supabase.from("company_settings").select("key,value,setting_key,setting_value,name,val");
-    const map: any = {};
-    (data ?? []).forEach((r: any) => {
-      const k = r.key ?? r.setting_key ?? r.name ?? null;
-      const v = r.value ?? r.setting_value ?? r.val ?? null;
-      if (k) map[k] = v;
+    // Handle the actual schema: company_settings has a jsonb 'branding' column
+    const { data } = await supabase.from("company_settings").select("branding").eq("id", true).maybeSingle();
+    const branding = data?.branding || {};
+    setBrand({ 
+      color: branding.brand_color || "#4D6BF1", 
+      logo_url: branding.brand_logo_url || "/logo/adeer logo.png" 
     });
-    setBrand({ color: map["brand_color"], logo_url: map["brand_logo_url"] });
   }
 
   async function setBrandSetting(key: string, value: string) {
     setOkMsg(null); setErr(null);
-    const { error } = await supabase.from("company_settings").upsert({ setting_key: key, setting_value: value }, { onConflict: "setting_key" });
+    // Update the JSONB branding field
+    const { data: current } = await supabase.from("company_settings").select("branding").eq("id", true).maybeSingle();
+    const currentBranding = current?.branding || {};
+    const updatedBranding = { ...currentBranding, [key]: value };
+    
+    const { error } = await supabase.from("company_settings")
+      .upsert({ id: true, branding: updatedBranding }, { onConflict: "id" });
     if (error) { setErr(error.message); } else { setOkMsg("Branding saved."); await loadBranding(); }
   }
 
@@ -292,9 +306,36 @@ export default function HRDashboard() {
     e.preventDefault();
     if (!newUser) return;
     setOkMsg(null); setErr(null);
-    // Assumes a user provisioning flow exists; here we only insert metadata row
-    const { error } = await supabase.from("users").insert({ email: newUser.email, role: newUser.role });
-    if (error) setErr(error.message); else { setOkMsg("User metadata created."); await refreshUsers(); setNewUser({ email: "", role: "staff" }); }
+    try {
+      if (!newUser.email) { setErr("Email is required"); return; }
+      const tempPassword = generateTempPassword();
+      const res = await fetch("/api/admin/create-staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: newUser.email,
+          fullName: null,
+          role: newUser.role ?? "staff",
+          employmentId: null,
+          tempPassword,
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to create staff");
+      const shownPass = json?.tempPassword || tempPassword;
+      setLastCreated({ email: newUser.email, tempPassword: shownPass });
+      setOkMsg(`Staff created. Temporary password: ${shownPass}`);
+      // Optimistically append row so it shows immediately
+      if (json?.user_id) {
+        setUsers((prev:any[] = []) => [{ id: json.user_id, email: newUser.email, full_name: null, role: newUser.role ?? "staff" }, ...prev]);
+        setUserRolesMap((m) => ({ ...(m||{}), [json.user_id]: newUser.role ?? "staff" }));
+      } else {
+        await refreshUsers();
+      }
+      setNewUser({ email: "", role: "staff" });
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to create staff");
+    }
   }
 
   async function inviteUserByEmail(email: string) {
@@ -322,7 +363,7 @@ export default function HRDashboard() {
     setOkMsg(null); setErr(null);
     try {
       if (!payload?.email) { setErr("Email is required"); return; }
-      const tempPassword = generateTempPassword();
+      const tempPassword = payload.tempPassword && payload.tempPassword.trim() ? payload.tempPassword.trim() : generateTempPassword();
       const res = await fetch("/api/admin/create-staff", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -348,8 +389,16 @@ export default function HRDashboard() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to create staff");
-      setOkMsg(`Staff account created. Temporary password: ${tempPassword}`);
-      await refreshUsers();
+      const shownPass = json?.tempPassword || tempPassword;
+      setLastCreated({ email: payload.email, tempPassword: shownPass });
+      setOkMsg(`Staff account created. Temporary password: ${shownPass}`);
+      // Optimistically append to users table
+      if (json?.user_id) {
+        setUsers((prev:any[] = []) => [{ id: json.user_id, email: payload.email, full_name: payload.fullName ?? null, role: payload.role ?? "staff" }, ...prev]);
+        setUserRolesMap((m) => ({ ...(m||{}), [json.user_id]: payload.role ?? "staff" }));
+      } else {
+        await refreshUsers();
+      }
     } catch (e: any) {
       setErr(e?.message ?? "Failed to save staff");
     }
@@ -508,18 +557,20 @@ export default function HRDashboard() {
   // --- Staff Cards consolidated loader (top-level) ---
   async function loadStaffCardsData() {
     try {
-      const [usersRes, filesRes, warnsRes, statusRes, cardsRes] = await Promise.all([
-        supabase.from("users").select("id,email,full_name").order("email"),
+      const [usersRes, filesRes, warnsRes, statusRes, cardsRes, rolesRes] = await Promise.all([
+        supabase.from("users").select("id,email,full_name,role").order("email"),
         supabase.from("staff_files").select("user_id"),
         supabase.from("warnings").select("user_id"),
         supabase.from("v_current_status").select("user_id,status,last_event,last_ts"),
-        supabase.from("staff_cards").select("user_id,card_url,created_at")
+        supabase.from("staff_cards").select("user_id,card_url,avatar_url,created_at"),
+        supabase.from("user_roles").select("user_id,role")
       ]);
       const users = usersRes.data ?? [];
       const files = filesRes.data ?? [];
       const warns = warnsRes.data ?? [];
       const stats = statusRes.data ?? [];
       const cards = cardsRes.data ?? [];
+      const roles = rolesRes.data ?? [];
       const fileCount: Record<string, number> = {};
       files.forEach((r: any) => { fileCount[r.user_id] = (fileCount[r.user_id] || 0) + 1; });
       const warnCount: Record<string, number> = {};
@@ -528,6 +579,8 @@ export default function HRDashboard() {
       stats.forEach((r: any) => { statusMap[r.user_id] = r; });
       const cardMap: Record<string, any> = {};
       cards.forEach((r: any) => { cardMap[r.user_id] = r; });
+      const roleMap: Record<string, string> = {};
+      roles.forEach((r: any) => { roleMap[r.user_id] = r.role; });
       const merged = users.map((u: any) => {
         const st = statusMap[u.id] || {};
         const s = (st.status ?? st.last_event ?? "")?.toString().toLowerCase();
@@ -536,6 +589,7 @@ export default function HRDashboard() {
           user_id: u.id,
           name: u.full_name || u.email || u.id,
           email: u.email,
+          role: roleMap[u.id] || u.role || "staff",
           docs_count: fileCount[u.id] || 0,
           warnings_count: warnCount[u.id] || 0,
           status: st.status ?? st.last_event ?? "—",
@@ -543,6 +597,7 @@ export default function HRDashboard() {
           onClock,
           has_card: !!cardMap[u.id],
           card_url: cardMap[u.id]?.card_url || null,
+          avatar_url: cardMap[u.id]?.avatar_url || null,
         };
       });
       setStaffCards(merged);
@@ -801,14 +856,35 @@ export default function HRDashboard() {
           <button
             onClick={() => logAttendance("check_in")}
             disabled={punchLoading}
-            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${goldMode && role === 'ceo' ? 'bg-[#D4AF37] text-black hover:bg-[#c6a232]' : 'bg-brand-primary text-white hover:bg-brand-primary/90'}`}
+            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed 
+              ${isOnClock
+                ? 'bg-emerald-600 text-white hover:bg-emerald-600 ring-2 ring-emerald-400 shadow-lg shadow-emerald-500/30 animate-pulse'
+                : (goldMode && role === 'ceo'
+                  ? 'bg-[#D4AF37] text-black hover:bg-[#c6a232]'
+                  : 'bg-brand-primary text-white hover:bg-brand-primary/90')}
+            `}
           >
-            Punch In
+            {isOnClock ? 'Punched In' : 'Punch In'}
           </button>
+          {isOnClock && (
+            <span className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-sm">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              You’re punched in
+            </span>
+          )}
           <button
             onClick={() => logAttendance("check_out")}
             disabled={punchLoading}
-            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${goldMode && role === 'ceo' ? 'bg-[#2b2b2b] text-white hover:bg-black/80' : 'bg-gray-800 text-white hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600'}`}
+            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed 
+              ${isOnClock
+                ? 'bg-rose-600 text-white hover:bg-rose-600 ring-2 ring-rose-400 shadow-lg shadow-rose-500/30 animate-pulse'
+                : (goldMode && role === 'ceo'
+                  ? 'bg-[#2b2b2b] text-white hover:bg-black/80'
+                  : 'bg-gray-800 text-white hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600')}
+            `}
           >
             Punch Out
           </button>
@@ -982,23 +1058,20 @@ export default function HRDashboard() {
                 </button>
               </div>
             </div>
-            <form onSubmit={createBasicUser} className="mb-3 flex flex-wrap items-end gap-2 text-sm">
-              <div>
-                <label className="mb-1 block text-xs">Email</label>
-                <input required value={newUser?.email ?? ""} onChange={(e) => setNewUser((s) => ({ ...(s as any), email: e.target.value }))} className="rounded-md border px-3 py-2" />
+            {lastCreated && (
+              <div className="mb-3 flex items-center justify-between rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm dark:border-emerald-800 dark:bg-emerald-900/20">
+                <div className="flex items-center gap-3">
+                  <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  <span>
+                    <strong>Staff created:</strong> {lastCreated.email} — <strong>Temp password:</strong> {lastCreated.tempPassword}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={()=>navigator.clipboard.writeText(`${lastCreated.email} ${lastCreated.tempPassword}`)} className="rounded-md border px-2 py-1 text-xs">Copy both</button>
+                  <button type="button" onClick={()=>navigator.clipboard.writeText(lastCreated.tempPassword)} className="rounded-md border px-2 py-1 text-xs">Copy password</button>
+                </div>
               </div>
-              <div>
-                <label className="mb-1 block text-xs">Role</label>
-                <select value={newUser?.role ?? "staff"} onChange={(e) => setNewUser((s) => ({ ...(s as any), role: e.target.value }))} className="rounded-md border px-3 py-2">
-                  <option value="staff">staff</option>
-                  <option value="assistant_manager">assistant_manager</option>
-                  <option value="manager">manager</option>
-                  <option value="hr">hr</option>
-                  <option value="ceo">ceo</option>
-                </select>
-              </div>
-              <button type="submit" className="rounded-md bg-brand-primary px-3 py-2 text-white shadow-sm hover:bg-brand-primary/90">Add</button>
-            </form>
+            )}
             <div className="max-h-64 overflow-auto rounded-md border">
               <table className="w-full text-left text-sm">
                 <thead>
@@ -1359,13 +1432,14 @@ export default function HRDashboard() {
                         title: r.title ?? null,
                         team: r.team ?? null,
                         avatar_url: r.avatar_url ?? null,
+                        role: r.role ?? "staff",
                         status: r.status ?? null,
                         today_check_in: null,
                         today_check_out: null,
                         warnings_count: r.warnings_count ?? 0,
                       }}
                       onShowMore={(id) => {
-                        setActiveStaff({ id, full_name: r.name, title: r.title ?? null, team: r.team ?? null, avatar_url: r.avatar_url ?? null });
+                        setActiveStaff({ id, full_name: r.name, title: null, team: null, avatar_url: r.avatar_url ?? null });
                         setOpenStaffModal(true);
                       }}
                     />
