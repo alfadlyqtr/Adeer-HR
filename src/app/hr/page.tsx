@@ -69,6 +69,14 @@ export default function HRDashboard() {
   const [managerUserId, setManagerUserId] = useState("");
   const [managerTeamId, setManagerTeamId] = useState("");
   const [warnings, setWarnings] = useState<any[]>([]);
+  // Issue Warning modal state
+  const [newWarnOpen, setNewWarnOpen] = useState(false);
+  const [newWarnUserId, setNewWarnUserId] = useState<string>("");
+  const [newWarnSeverity, setNewWarnSeverity] = useState<'low'|'medium'|'high'>("medium");
+  const [newWarnMsg, setNewWarnMsg] = useState("");
+  const [newWarnSubmitting, setNewWarnSubmitting] = useState(false);
+  const [newWarnError, setNewWarnError] = useState<string | null>(null);
+  const [newWarnOk, setNewWarnOk] = useState<string | null>(null);
   // Staff Cards consolidated view
   const [staffCards, setStaffCards] = useState<any[] | null>(null);
   const [staffCardsLoading, setStaffCardsLoading] = useState(false);
@@ -182,7 +190,7 @@ export default function HRDashboard() {
     if (tab === "teams") loadTeams();
     if (tab === "warnings") loadWarnings();
     if (tab === "settings") loadSettingsData();
-    // Removed loadStaffCardsData() call - now handled by SimpleStaffCards component
+    if (tab === "cards") loadStaffCardsData();
     if (tab === "reports") {
       loadLatenessHeatmap();
       loadWeeklyTrends();
@@ -406,6 +414,52 @@ export default function HRDashboard() {
       } else {
         await refreshUsers();
       }
+
+      // Upload provided files and link them so they show on the card
+      const userId: string | undefined = json?.user_id;
+      if (userId) {
+        const BUCKET = process.env.NEXT_PUBLIC_STAFF_PHOTOS_BUCKET || 'hr-files';
+        const getExt = (name?: string) => {
+          if (!name) return 'jpg';
+          const i = name.lastIndexOf('.');
+          return i !== -1 ? name.slice(i+1).toLowerCase() : 'jpg';
+        };
+        const uploadFile = async (file: File, key: string) => {
+          const ext = getExt(file.name);
+          const path = `${userId}/${key}-${Date.now()}.${ext}`;
+          const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, { upsert: true, contentType: file.type });
+          if (upErr) throw upErr;
+          const { data: signed, error: sErr } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 60 * 24 * 7);
+          if (sErr) throw sErr;
+          return signed?.signedUrl as string;
+        };
+
+        // Avatar/photo -> staff_cards.avatar_url and file_url (NOT NULL)
+        if (payload.photoFile) {
+          try {
+            const url = await uploadFile(payload.photoFile, 'avatar');
+            await supabase.from('staff_cards').upsert({ user_id: userId, avatar_url: url, file_url: url, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+          } catch (e) { console.warn('[saveNewStaff] avatar upload failed', e); }
+        }
+
+        // Documents -> staff_files
+        const docs: Array<{ file?: File|null; key: string }> = [
+          { file: payload.passportFile, key: 'passport' },
+          { file: payload.idFile, key: 'id' },
+          { file: payload.licenseFile, key: 'license' },
+        ];
+        for (const d of docs) {
+          if (d.file) {
+            try {
+              const url = await uploadFile(d.file, d.key);
+              await supabase.from('staff_files').insert({ user_id: userId, file_url: url, created_at: new Date().toISOString() });
+            } catch (e) { console.warn('[saveNewStaff] doc upload failed', d.key, e); }
+          }
+        }
+
+        // Refresh cards so the new avatar shows immediately
+        await loadStaffCardsData();
+      }
     } catch (e: any) {
       setErr(e?.message ?? "Failed to save staff");
     }
@@ -568,56 +622,108 @@ export default function HRDashboard() {
     try {
       setStaffCardsLoading(true);
       setErr(null);
-      console.log("[loadStaffCardsData] Creating mock data to bypass network issues...");
       
-      // Create mock staff cards data to bypass the network issues
-      const mockStaffCards = [
-        {
-          user_id: "eba0b08c-a442-423a-b52f-16d8656bc892",
-          name: "Abdullah",
-          email: "abdullah@adeersolutions.com",
-          role: "hr",
-          docs_count: 0,
-          warnings_count: 0,
-          status: "—",
-          last_ts: null,
-          onClock: false,
-          has_card: true,
-          card_url: null,
-          avatar_url: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&h=150&fit=crop&crop=face",
-        },
-        {
-          user_id: "a4ca2aad-2ecc-408e-9030-d6eb1ed022b8",
-          name: "Reema Al-kuwari",
-          email: "eo@adeersolutions.com",
-          role: "ceo",
-          docs_count: 0,
-          warnings_count: 0,
-          status: "—",
-          last_ts: null,
-          onClock: false,
-          has_card: true,
-          card_url: null,
-          avatar_url: "https://images.unsplash.com/photo-1494790108755-2616b612b786?w=150&h=150&fit=crop&crop=face",
-        },
-        {
-          user_id: "2de00dd0-d8ea-4728-bab1-e9c798d3f5aa",
-          name: "mossa",
-          email: "hr@test.com",
-          role: "hr",
-          docs_count: 0,
-          warnings_count: 0,
-          status: "—",
-          last_ts: null,
-          onClock: false,
-          has_card: true,
-          card_url: null,
-          avatar_url: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&h=150&fit=crop&crop=face",
+      console.log("[loadStaffCardsData] Starting database queries...");
+      // Compute today's start/end in ISO for filtering attendance logs
+      const now = new Date();
+      const start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(now);
+      end.setHours(23, 59, 59, 999);
+      // Also get a wider window for fallback anchor (e.g., last check_in in last 36h)
+      const startFallback = new Date(start);
+      startFallback.setHours(startFallback.getHours() - 36);
+
+      const [usersRes, filesRes, warnsRes, statusRes, cardsRes, rolesRes, todayLogsRes] = await Promise.all([
+        supabase.from("users").select("id,email,full_name,role").order("email"),
+        supabase.from("staff_files").select("user_id"),
+        supabase.from("warnings").select("user_id"),
+        supabase.from("v_current_status").select("user_id,status,last_event,last_ts"),
+        supabase.from("staff_cards").select("user_id,card_url,avatar_url,created_at"),
+        supabase.from("user_roles").select("user_id,role"),
+        supabase
+          .from("attendance_logs")
+          .select("user_id,type,ts")
+          .gte("ts", startFallback.toISOString())
+          .lte("ts", end.toISOString())
+      ]);
+      
+      console.log("[loadStaffCardsData] Database results:", {
+        users: usersRes.data?.length || 0,
+        cards: cardsRes.data?.length || 0,
+        cardsData: cardsRes.data,
+        cardsError: cardsRes.error
+      });
+      const users = usersRes.data ?? [];
+      const files = filesRes.data ?? [];
+      const warns = warnsRes.data ?? [];
+      const stats = statusRes.data ?? [];
+      const cards = cardsRes.data ?? [];
+      const roles = rolesRes.data ?? [];
+      const todayLogs = todayLogsRes?.data ?? [];
+      const fileCount: Record<string, number> = {};
+      files.forEach((r: any) => { fileCount[r.user_id] = (fileCount[r.user_id] || 0) + 1; });
+      const warnCount: Record<string, number> = {};
+      warns.forEach((r: any) => { warnCount[r.user_id] = (warnCount[r.user_id] || 0) + 1; });
+      const statusMap: Record<string, any> = {};
+      stats.forEach((r: any) => { statusMap[r.user_id] = r; });
+      const cardMap: Record<string, any> = {};
+      cards.forEach((r: any) => { cardMap[r.user_id] = r; });
+      const roleMap: Record<string, string> = {};
+      roles.forEach((r: any) => { roleMap[r.user_id] = r.role; });
+
+      // Compute today's check-in/out per user from attendance_logs
+      const todayMap: Record<string, { in?: string|null; out?: string|null }> = {};
+      const lastCheckInMap: Record<string, string> = {};
+      for (const log of todayLogs as any[]) {
+        const uid = log.user_id;
+        if (!uid) continue;
+        const ts = log.ts as string;
+        const type = String(log.type || '').toLowerCase();
+        if (!todayMap[uid]) todayMap[uid] = { in: null, out: null };
+        if (type === 'check_in' || type === 'in') {
+          // first check_in of the day
+          if (!todayMap[uid].in || ts < (todayMap[uid].in as string)) todayMap[uid].in = ts;
+          // track latest check_in in the 36h window for fallback anchor
+          if (!lastCheckInMap[uid] || ts > lastCheckInMap[uid]) lastCheckInMap[uid] = ts;
+        } else if (type === 'check_out' || type === 'out') {
+          // last check_out of the day
+          if (!todayMap[uid].out || ts > (todayMap[uid].out as string)) todayMap[uid].out = ts;
         }
-      ];
+      }
+
+      const merged = users.map((u: any) => {
+        const st = statusMap[u.id] || {};
+        const s = (st.status ?? st.last_event ?? "")?.toString().toLowerCase();
+        const onClock = ["present", "working", "checked_in", "in"].includes(s) || (st.last_event === "check_in");
+        const today = todayMap[u.id] || { in: null, out: null };
+        // If currently on clock but we didn't find a 'today in', fallback to last check_in in 36h, then last_ts
+        let todayIn = today.in || null;
+        if (onClock && !todayIn) todayIn = lastCheckInMap[u.id] || null;
+        if (onClock && !todayIn && st.last_ts) todayIn = st.last_ts;
+        return {
+          user_id: u.id,
+          name: u.full_name || u.email || u.id,
+          email: u.email,
+          role: roleMap[u.id] || u.role || "staff",
+          docs_count: fileCount[u.id] || 0,
+          warnings_count: warnCount[u.id] || 0,
+          status: st.status ?? st.last_event ?? "—",
+          last_ts: st.last_ts ?? null,
+          onClock,
+          has_card: !!cardMap[u.id],
+          card_url: cardMap[u.id]?.card_url || null,
+          avatar_url: cardMap[u.id]?.avatar_url || null,
+          today_check_in: todayIn,
+          today_check_out: today.out || null,
+        };
+      });
       
-      setStaffCards(mockStaffCards);
-      console.log("[loadStaffCardsData] Successfully loaded", mockStaffCards.length, "mock staff cards");
+      console.log("[loadStaffCardsData] Final merged data:", merged);
+      console.log("[loadStaffCardsData] Abdullah's data:", merged.find(s => s.name?.toLowerCase().includes('abdullah')));
+      
+      setStaffCards(merged);
+      console.log("[loadStaffCardsData] Successfully loaded", merged.length, "staff cards from database");
       
     } catch (e: any) {
       console.error("[loadStaffCardsData] Failed:", e);
@@ -635,10 +741,15 @@ export default function HRDashboard() {
   }
 
   function handleAvatarUpdate(staffId: string, avatarUrl: string) {
+    // legacy local map (can be removed later)
     setStaffAvatars(prev => ({
       ...prev,
       [staffId]: avatarUrl
     }));
+    // immediately update the rendered cards list
+    setStaffCards(prev => (prev ? prev.map(s => (
+      s.user_id === staffId ? { ...s, avatar_url: avatarUrl } : s
+    )) : prev));
   }
 
   // --- Teams management ---
@@ -672,8 +783,62 @@ export default function HRDashboard() {
 
   // --- Warnings ---
   async function loadWarnings() {
-    const { data } = await supabase.from("warnings").select("id,user_id,reason,issued_by,created_at").order("created_at", { ascending: false }).limit(50);
-    setWarnings(data ?? []);
+    const { data: w } = await supabase
+      .from("warnings")
+      .select("id,user_id,reason,message,severity,issued_by,created_at")
+      .order("created_at", { ascending: false })
+      .limit(50);
+    const warn = w ?? [];
+    // Fetch users map for display
+    const { data: users } = await supabase.from("users").select("id,email,full_name");
+    const userMap: Record<string, { email?: string|null; full_name?: string|null }> = {};
+    (users ?? []).forEach((u: any) => { userMap[u.id] = { email: u.email, full_name: u.full_name }; });
+    // Hydrate display fields
+    const hydrated = warn.map((row: any) => ({
+      ...row,
+      _user_email: userMap[row.user_id]?.email || row.user_id,
+      _user_name: userMap[row.user_id]?.full_name || userMap[row.user_id]?.email || row.user_id,
+      _issued_email: row.issued_by_email || userMap[row.issued_by]?.email || row.issued_by || null,
+      _text: row.message || row.reason || 'Warning',
+    }));
+    setWarnings(hydrated);
+  }
+
+  async function deleteWarningHR(id: string) {
+    try {
+      await supabase.from('warnings').delete().eq('id', id);
+      await loadWarnings();
+    } catch {}
+  }
+
+  async function submitNewWarning() {
+    setNewWarnError(null); setNewWarnOk(null);
+    if (!newWarnUserId) { setNewWarnError('Please select a staff member'); return; }
+    setNewWarnSubmitting(true);
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const issuedBy = sess?.session?.user?.id || null;
+      // Use a schema-safe minimal payload to avoid 400s from unknown columns
+      const payloadMin: any = {
+        user_id: newWarnUserId,
+        reason: newWarnMsg || null,
+        issued_by: issuedBy,
+      };
+      const { error } = await supabase
+        .from('warnings')
+        .insert(payloadMin);
+      if (error) throw error;
+      setNewWarnOk('Warning issued');
+      setNewWarnMsg("");
+      setNewWarnUserId("");
+      setNewWarnSeverity("medium");
+      await loadWarnings();
+      setNewWarnOpen(false);
+    } catch (e: any) {
+      setNewWarnError(e?.message || 'Failed to issue warning');
+    } finally {
+      setNewWarnSubmitting(false);
+    }
   }
 
   // --- HR Settings data loaders ---
@@ -1411,7 +1576,10 @@ export default function HRDashboard() {
           <section className="rounded-lg border p-4 md:col-span-2">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-lg font-medium">Warnings</h2>
-              <button onClick={loadWarnings} className="text-xs text-brand-primary">Refresh</button>
+              <div className="flex items-center gap-2">
+                <button onClick={loadWarnings} className="text-xs text-brand-primary">Refresh</button>
+                <button onClick={() => setNewWarnOpen(true)} className="rounded-md bg-rose-600 px-2 py-1 text-xs text-white hover:opacity-90">Issue Warning</button>
+              </div>
             </div>
             {warnings.length === 0 ? (
               <p className="text-sm opacity-70">No warnings yet.</p>
@@ -1419,15 +1587,18 @@ export default function HRDashboard() {
               <div className="max-h-64 overflow-auto rounded-md border">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="border-b"><th className="py-2">User</th><th className="py-2">Reason</th><th className="py-2">Issued By</th><th className="py-2">At</th></tr>
+                    <tr className="border-b"><th className="py-2">User</th><th className="py-2">Warning</th><th className="py-2">Issued By</th><th className="py-2">At</th><th className="py-2"></th></tr>
                   </thead>
                   <tbody>
                     {warnings.map((w) => (
                       <tr key={w.id} className="border-b last:border-b-0">
-                        <td className="py-1">{w.user_id}</td>
-                        <td className="py-1">{w.reason}</td>
-                        <td className="py-1">{w.issued_by}</td>
+                        <td className="py-1">{w._user_name || w._user_email || w.user_id}</td>
+                        <td className="py-1">{w._text}</td>
+                        <td className="py-1">{w._issued_email || w.issued_by}</td>
                         <td className="py-1">{new Date(w.created_at).toLocaleString()}</td>
+                        <td className="py-1 text-right">
+                          <button onClick={() => deleteWarningHR(w.id)} className="rounded-md border px-2 py-1 text-[11px] text-rose-600 hover:bg-rose-600/10">Delete</button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1444,71 +1615,53 @@ export default function HRDashboard() {
         {tab === "cards" && (
           <section className="rounded-lg border p-4">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-lg font-medium">Staff Cards</h2>
-              <button onClick={() => window.location.reload()} className="text-xs text-brand-primary">Refresh</button>
+              <h2 className="text-lg font-medium">Staff Cards ({staffCards?.length || 0})</h2>
+              <button onClick={loadStaffCardsData} className="text-xs text-brand-primary hover:underline">Refresh</button>
             </div>
-            <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
-              <li>
-                <StaffCard
-                  staff={{
-                    id: "eba0b08c-a442-423a-b52f-16d8656bc892",
-                    full_name: "Abdullah",
-                    title: null,
-                    team: null,
-                    avatar_url: staffAvatars["eba0b08c-a442-423a-b52f-16d8656bc892"] || null,
-                    role: "hr",
-                    status: "—",
-                    today_check_in: null,
-                    today_check_out: null,
-                    warnings_count: 0,
-                  }}
-                  onShowMore={(id) => {
-                    setActiveStaff({ id, full_name: "Abdullah", title: null, team: null, avatar_url: null });
-                    setOpenStaffModal(true);
-                  }}
-                />
-              </li>
-              <li>
-                <StaffCard
-                  staff={{
-                    id: "a4ca2aad-2ecc-408e-9030-d6eb1ed022b8",
-                    full_name: "Reema Al-kuwari",
-                    title: null,
-                    team: null,
-                    avatar_url: staffAvatars["a4ca2aad-2ecc-408e-9030-d6eb1ed022b8"] || null,
-                    role: "ceo",
-                    status: "—",
-                    today_check_in: null,
-                    today_check_out: null,
-                    warnings_count: 0,
-                  }}
-                  onShowMore={(id) => {
-                    setActiveStaff({ id, full_name: "Reema Al-kuwari", title: null, team: null, avatar_url: null });
-                    setOpenStaffModal(true);
-                  }}
-                />
-              </li>
-              <li>
-                <StaffCard
-                  staff={{
-                    id: "2de00dd0-d8ea-4728-bab1-e9c798d3f5aa",
-                    full_name: "Mossa",
-                    title: null,
-                    team: null,
-                    avatar_url: staffAvatars["2de00dd0-d8ea-4728-bab1-e9c798d3f5aa"] || null,
-                    role: "hr",
-                    status: "—",
-                    today_check_in: null,
-                    today_check_out: null,
-                    warnings_count: 0,
-                  }}
-                  onShowMore={(id) => {
-                    setActiveStaff({ id, full_name: "Mossa", title: null, team: null, avatar_url: null });
-                    setOpenStaffModal(true);
-                  }}
-                />
-              </li>
-            </ul>
+            {staffCardsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="text-center">
+                  <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-blue-600 border-t-transparent"></div>
+                  <p className="mt-2 text-sm opacity-70">Loading staff cards...</p>
+                </div>
+              </div>
+            ) : !staffCards || staffCards.length === 0 ? (
+              <p className="text-sm opacity-70">No staff found.</p>
+            ) : (
+              <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+                {staffCards.map((staff) => (
+                  <li key={staff.user_id}>
+                    <StaffCard
+                      staff={{
+                        id: staff.user_id,
+                        full_name: staff.name,
+                        title: null,
+                        team: null,
+                        avatar_url: staff.avatar_url,
+                        role: staff.role,
+                        status: staff.status,
+                        today_check_in: staff.today_check_in || null,
+                        today_check_out: staff.today_check_out || null,
+                        onClock: staff.onClock,
+                        last_ts: staff.last_ts || null,
+                        warnings_count: staff.warnings_count,
+                      }}
+                      onShowMore={(id) => {
+                        const staffMember = staffCards?.find(s => s.user_id === id);
+                        setActiveStaff({ 
+                          id, 
+                          full_name: staffMember?.name, 
+                          title: null, 
+                          team: null, 
+                          avatar_url: staffMember?.avatar_url 
+                        });
+                        setOpenStaffModal(true);
+                      }}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         )}
 
@@ -1521,9 +1674,9 @@ export default function HRDashboard() {
         <NewStaffModal open={openNewStaff} onClose={() => setOpenNewStaff(false)} onSave={saveNewStaff} goldMode={goldMode && role === 'ceo'} />
 
         {confirmModal.open && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmModal({ open: false })} />
-            <div className="relative z-10 w-[min(460px,95vw)] rounded-lg border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5 p-4 shadow-xl dark:bg-black">
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/70" onClick={() => setConfirmModal({ open: false })} />
+            <div className="relative z-[1001] w-[min(460px,95vw)] rounded-lg border border-gray-200 bg-white p-4 shadow-2xl dark:border-white/10 dark:bg-[#0b0b0b]">
               <h3 className="mb-2 text-base font-semibold">Please confirm</h3>
               <p className="mb-4 text-sm">
                 {confirmModal.action === 'delete' && (
@@ -1539,6 +1692,72 @@ export default function HRDashboard() {
               <div className="flex items-center justify-end gap-2">
                 <button onClick={() => setConfirmModal({ open: false })} className="rounded-md border px-3 py-2 text-sm">Cancel</button>
                 <button onClick={runConfirmedAction} className="rounded-md bg-brand-primary px-3 py-2 text-sm text-white">Confirm</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {newWarnOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/60" onClick={() => setNewWarnOpen(false)} />
+            <div className="relative z-10 w-[min(560px,95vw)] rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-[#0b0b0b]">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-base font-semibold">Issue Warning</h3>
+                <button onClick={() => setNewWarnOpen(false)} className="rounded-md border px-2 py-1 text-xs">Close</button>
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-xs opacity-70">Staff</label>
+                  <select
+                    className="w-full rounded-md border px-3 py-2 text-sm"
+                    value={newWarnUserId}
+                    onChange={(e) => setNewWarnUserId(e.target.value)}
+                  >
+                    <option value="">Select staff…</option>
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>{u.full_name ?? u.email ?? u.id}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs opacity-70">Severity</label>
+                    <select
+                      className="w-full rounded-md border px-3 py-2 text-sm"
+                      value={newWarnSeverity}
+                      onChange={(e) => setNewWarnSeverity(e.target.value as any)}
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs opacity-70">When</label>
+                    <input className="w-full cursor-not-allowed rounded-md border px-3 py-2 text-sm opacity-70" value={new Date().toLocaleString()} readOnly />
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs opacity-70">Message</label>
+                  <textarea
+                    className="h-28 w-full resize-y rounded-md border p-3 text-sm"
+                    placeholder="Describe the reason (e.g., Late check-in, Early leave, Policy breach, etc.)"
+                    value={newWarnMsg}
+                    onChange={(e) => setNewWarnMsg(e.target.value)}
+                  />
+                </div>
+                {newWarnError && <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700 dark:border-rose-500/40 dark:bg-rose-900/20 dark:text-rose-300">{newWarnError}</div>}
+                {newWarnOk && <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-900/20 dark:text-emerald-300">{newWarnOk}</div>}
+                <div className="flex items-center justify-end gap-2">
+                  <button onClick={() => setNewWarnOpen(false)} className="rounded-md border px-3 py-2 text-sm">Cancel</button>
+                  <button
+                    onClick={submitNewWarning}
+                    disabled={newWarnSubmitting}
+                    className="rounded-md bg-rose-600 px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {newWarnSubmitting ? 'Submitting…' : 'Submit Warning'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

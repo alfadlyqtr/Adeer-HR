@@ -17,13 +17,30 @@ export function useUserRole() {
         if (mounted) { setRole(null); setLoading(false); }
         return;
       }
-      const { data } = await supabase
-        .from("users")
-        .select("role")
-        .eq("id", session.user.id)
-        .maybeSingle();
+      // Prefer explicit assignment in user_roles, fallback to users.role
+      let resolved: string | null = null;
+      try {
+        const ur = await supabase
+          .from("user_roles")
+          .select("role")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (!ur.error && ur.data?.role) {
+          resolved = String(ur.data.role).toLowerCase();
+        }
+      } catch {}
+      if (!resolved) {
+        const u = await supabase
+          .from("users")
+          .select("role")
+          .eq("id", session.user.id)
+          .maybeSingle();
+        if (!u.error && u.data?.role) {
+          resolved = String(u.data.role).toLowerCase();
+        }
+      }
       if (!mounted) return;
-      setRole((data?.role ?? null) as Role | null);
+      setRole((resolved as Role) || null);
       setLoading(false);
     }
     load();

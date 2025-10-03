@@ -404,13 +404,19 @@ export default function CEODashboardPage() {
   // --- Staff Cards Tab Loader ---
   async function loadStaffCardsData() {
     try {
-      const [usersRes, filesRes, warnsRes, statusRes, cardsRes, rolesRes] = await Promise.all([
+      // Compute today's date window
+      const now = new Date();
+      const start = new Date(now); start.setHours(0,0,0,0);
+      const end = new Date(now); end.setHours(23,59,59,999);
+
+      const [usersRes, filesRes, warnsRes, statusRes, cardsRes, rolesRes, todayLogsRes] = await Promise.all([
         supabase.from("users").select("id,email,full_name,role").order("email"),
         supabase.from("staff_files").select("user_id"),
         supabase.from("warnings").select("user_id"),
         supabase.from("v_current_status").select("user_id,status,last_event,last_ts"),
         supabase.from("staff_cards").select("user_id,card_url,avatar_url,created_at"),
-        supabase.from("user_roles").select("user_id,role")
+        supabase.from("user_roles").select("user_id,role"),
+        supabase.from("attendance_logs").select("user_id,type,ts").gte("ts", start.toISOString()).lte("ts", end.toISOString())
       ]);
       const users = usersRes.data ?? [];
       const files = filesRes.data ?? [];
@@ -418,6 +424,7 @@ export default function CEODashboardPage() {
       const stats = statusRes.data ?? [];
       const cards = cardsRes.data ?? [];
       const roles = rolesRes.data ?? [];
+      const todayLogs = todayLogsRes?.data ?? [];
       const fileCount: Record<string, number> = {};
       files.forEach((r: any) => { fileCount[r.user_id] = (fileCount[r.user_id] || 0) + 1; });
       const warnCount: Record<string, number> = {};
@@ -428,10 +435,28 @@ export default function CEODashboardPage() {
       cards.forEach((r: any) => { cardMap[r.user_id] = r; });
       const roleMap: Record<string, string> = {};
       roles.forEach((r: any) => { roleMap[r.user_id] = r.role; });
+      // Build today's in/out map
+      const todayMap: Record<string, { in?: string|null; out?: string|null }> = {};
+      for (const log of todayLogs as any[]) {
+        const uid = log.user_id; if (!uid) continue;
+        const ts = log.ts as string; const type = String(log.type||'').toLowerCase();
+        if (!todayMap[uid]) todayMap[uid] = { in: null, out: null };
+        if (type === 'check_in') {
+          if (!todayMap[uid].in || ts < (todayMap[uid].in as string)) todayMap[uid].in = ts;
+        } else if (type === 'check_out') {
+          if (!todayMap[uid].out || ts > (todayMap[uid].out as string)) todayMap[uid].out = ts;
+        }
+      }
       const merged = users.map((u: any) => {
         const st = statusMap[u.id] || {};
         const s = (st.status ?? st.last_event ?? "")?.toString().toLowerCase();
         const onClock = ["present", "working", "checked_in", "in"].includes(s) || (st.last_event === "check_in");
+        const today = todayMap[u.id] || { in: null, out: null };
+        // Fallback: if on clock but no explicit today check_in, use last_ts as anchor
+        let todayIn = today.in || null;
+        if (onClock && !todayIn && st.last_ts) {
+          todayIn = st.last_ts;
+        }
         return {
           user_id: u.id,
           name: u.full_name || u.email || u.id,
@@ -445,6 +470,8 @@ export default function CEODashboardPage() {
           has_card: !!cardMap[u.id],
           card_url: cardMap[u.id]?.card_url || null,
           avatar_url: cardMap[u.id]?.avatar_url || null,
+          today_check_in: todayIn,
+          today_check_out: today.out || null,
         };
       });
       setStaffCards(merged);
@@ -1155,8 +1182,10 @@ export default function CEODashboardPage() {
                           avatar_url: r.avatar_url ?? null,
                           role: r.role ?? "staff",
                           status: r.status ?? null,
-                          today_check_in: null,
-                          today_check_out: null,
+                          today_check_in: r.today_check_in || null,
+                          today_check_out: r.today_check_out || null,
+                          onClock: r.onClock,
+                          last_ts: r.last_ts || null,
                           warnings_count: r.warnings_count ?? 0,
                         }}
                         onShowMore={(id) => {
