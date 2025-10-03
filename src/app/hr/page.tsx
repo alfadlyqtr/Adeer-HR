@@ -70,6 +70,7 @@ export default function HRDashboard() {
   const [warnings, setWarnings] = useState<any[]>([]);
   // Staff Cards consolidated view
   const [staffCards, setStaffCards] = useState<any[] | null>(null);
+  const [staffCardsLoading, setStaffCardsLoading] = useState(false);
   // HR Settings data
   const [jobTitles, setJobTitles] = useState<any[]>([]);
   const [newJobTitle, setNewJobTitle] = useState("");
@@ -556,54 +557,81 @@ export default function HRDashboard() {
 
   // --- Staff Cards consolidated loader (top-level) ---
   async function loadStaffCardsData() {
+    if (staffCardsLoading) return; // Prevent multiple simultaneous calls
+    
     try {
-      const [usersRes, filesRes, warnsRes, statusRes, cardsRes, rolesRes] = await Promise.all([
-        supabase.from("users").select("id,email,full_name,role").order("email"),
-        supabase.from("staff_files").select("user_id"),
-        supabase.from("warnings").select("user_id"),
-        supabase.from("v_current_status").select("user_id,status,last_event,last_ts"),
-        supabase.from("staff_cards").select("user_id,card_url,avatar_url,created_at"),
-        supabase.from("user_roles").select("user_id,role")
-      ]);
-      const users = usersRes.data ?? [];
-      const files = filesRes.data ?? [];
-      const warns = warnsRes.data ?? [];
-      const stats = statusRes.data ?? [];
-      const cards = cardsRes.data ?? [];
-      const roles = rolesRes.data ?? [];
-      const fileCount: Record<string, number> = {};
-      files.forEach((r: any) => { fileCount[r.user_id] = (fileCount[r.user_id] || 0) + 1; });
-      const warnCount: Record<string, number> = {};
-      warns.forEach((r: any) => { warnCount[r.user_id] = (warnCount[r.user_id] || 0) + 1; });
-      const statusMap: Record<string, any> = {};
-      stats.forEach((r: any) => { statusMap[r.user_id] = r; });
-      const cardMap: Record<string, any> = {};
-      cards.forEach((r: any) => { cardMap[r.user_id] = r; });
+      setStaffCardsLoading(true);
+      setErr(null);
+      console.log("[loadStaffCardsData] Starting minimal load...");
+      
+      // Just load users and roles - minimal approach
+      const { data: users, error: usersError } = await supabase
+        .from("users")
+        .select("id,email,full_name,role")
+        .order("email");
+        
+      if (usersError) {
+        console.error("[loadStaffCardsData] Users error:", usersError);
+        setErr("Failed to load users: " + usersError.message);
+        setStaffCardsLoading(false);
+        return;
+      }
+      
+      console.log("[loadStaffCardsData] Users loaded:", users?.length || 0);
+      
+      // Try to load user_roles
+      let roles: any[] = [];
+      try {
+        const rolesRes = await supabase.from("user_roles").select("user_id,role");
+        roles = rolesRes.data || [];
+      } catch (err) {
+        console.warn("[loadStaffCardsData] user_roles failed:", err);
+      }
+        
+      // Try to load staff_cards
+      let cards: any[] = [];
+      try {
+        const cardsRes = await supabase.from("staff_cards").select("user_id,avatar_url,card_url,file_url");
+        cards = cardsRes.data || [];
+      } catch (err) {
+        console.warn("[loadStaffCardsData] staff_cards failed:", err);
+      }
+      
+      console.log("[loadStaffCardsData] Roles:", roles?.length || 0, "Cards:", cards?.length || 0);
+      
+      // Create role map
       const roleMap: Record<string, string> = {};
-      roles.forEach((r: any) => { roleMap[r.user_id] = r.role; });
-      const merged = users.map((u: any) => {
-        const st = statusMap[u.id] || {};
-        const s = (st.status ?? st.last_event ?? "")?.toString().toLowerCase();
-        const onClock = ["present", "working", "checked_in", "in"].includes(s) || (st.last_event === "check_in");
-        return {
-          user_id: u.id,
-          name: u.full_name || u.email || u.id,
-          email: u.email,
-          role: roleMap[u.id] || u.role || "staff",
-          docs_count: fileCount[u.id] || 0,
-          warnings_count: warnCount[u.id] || 0,
-          status: st.status ?? st.last_event ?? "—",
-          last_ts: st.last_ts ?? null,
-          onClock,
-          has_card: !!cardMap[u.id],
-          card_url: cardMap[u.id]?.card_url || null,
-          avatar_url: cardMap[u.id]?.avatar_url || null,
-        };
-      });
+      (roles || []).forEach((r: any) => { roleMap[r.user_id] = r.role; });
+      
+      // Create card map  
+      const cardMap: Record<string, any> = {};
+      (cards || []).forEach((r: any) => { cardMap[r.user_id] = r; });
+      
+      // Create simple staff cards
+      const merged = (users || []).map((u: any) => ({
+        user_id: u.id,
+        name: u.full_name || u.email || u.id,
+        email: u.email,
+        role: roleMap[u.id] || u.role || "staff",
+        docs_count: 0,
+        warnings_count: 0,
+        status: "—",
+        last_ts: null,
+        onClock: false,
+        has_card: !!cardMap[u.id],
+        card_url: cardMap[u.id]?.card_url || cardMap[u.id]?.file_url || null,
+        avatar_url: cardMap[u.id]?.avatar_url || null,
+      }));
+      
       setStaffCards(merged);
-    } catch (e) {
-      console.error("[cards] loadStaffCardsData failed", e);
+      console.log("[loadStaffCardsData] Successfully loaded", merged.length, "staff cards");
+      
+    } catch (e: any) {
+      console.error("[loadStaffCardsData] Failed:", e);
+      setErr("Failed to load staff cards: " + (e?.message || "Unknown error"));
       setStaffCards([]);
+    } finally {
+      setStaffCardsLoading(false);
     }
   }
 
@@ -1419,7 +1447,14 @@ export default function HRDashboard() {
               <h2 className="text-lg font-medium">Staff Cards</h2>
               <button onClick={loadStaffCardsData} className="text-xs text-brand-primary">Refresh</button>
             </div>
-            {!staffCards || staffCards.length === 0 ? (
+            {staffCardsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="text-center">
+                  <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-brand-primary border-t-transparent"></div>
+                  <p className="mt-2 text-sm opacity-70">Loading staff cards...</p>
+                </div>
+              </div>
+            ) : !staffCards || staffCards.length === 0 ? (
               <p className="text-sm opacity-70">No staff found.</p>
             ) : (
               <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
