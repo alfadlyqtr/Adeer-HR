@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 /**
@@ -10,16 +10,23 @@ import { supabase } from "@/lib/supabaseClient";
 export default function CEOBroadcast({ className = "" }: { className?: string }) {
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const mountedRef = useRef(false);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const reloadingRef = useRef(false);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let mounted = true;
+    mountedRef.current = true;
 
     async function load() {
-      if (!mounted) return;
-      // Don't flip back to loading spinner if we already have a message
+      if (!mountedRef.current) return;
+      // Avoid overlapping loads
+      if (reloadingRef.current) return;
+      reloadingRef.current = true;
+      // Only show spinner if there is no message yet
       if (!message) setLoading(true);
-      const safety = setTimeout(() => { if (mounted) setLoading(false); }, 3000);
-      try { console.log('[CEOBroadcast] loading latest message…', { origin: typeof window !== 'undefined' ? window.location.origin : 'ssr' }); } catch {}
+      const safety = setTimeout(() => { if (mountedRef.current) setLoading(false); }, 3000);
       try {
         const { data, error } = await supabase
           .from("broadcast_messages")
@@ -27,7 +34,7 @@ export default function CEOBroadcast({ className = "" }: { className?: string })
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle();
-        if (!mounted) return;
+        if (!mountedRef.current) return;
         if (error) {
           setMessage((prev) => prev ?? null);
         } else {
@@ -39,7 +46,8 @@ export default function CEOBroadcast({ className = "" }: { className?: string })
         // leave any existing message in place
       } finally {
         clearTimeout(safety);
-        if (mounted) setLoading(false);
+        if (mountedRef.current) setLoading(false);
+        reloadingRef.current = false;
       }
     }
 
@@ -50,32 +58,40 @@ export default function CEOBroadcast({ className = "" }: { className?: string })
     } catch {}
 
     // Kick off network load immediately
-    try { console.log('[CEOBroadcast] subscribing to realtime…'); } catch {}
     load();
 
-    // Realtime for INSERT/UPDATE/DELETE
-    const channel = supabase
-      .channel('ceo-broadcast-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'broadcast_messages' }, (payload) => {
-        try { console.log('[CEOBroadcast] realtime payload', payload); } catch {}
-        const next = (payload.new as any)?.message ?? null;
-        if (typeof next === 'string') {
-          setMessage(next);
-          try { localStorage.setItem("ceo_broadcast_last", next); } catch {}
-        } else {
-          // fallback: refetch
-          load();
-        }
-        setLoading(false);
-      })
-      .subscribe();
+    // Realtime for INSERT/UPDATE/DELETE (guard for StrictMode double effects)
+    if (!channelRef.current) {
+      channelRef.current = supabase
+        .channel('ceo-broadcast-realtime')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'broadcast_messages' }, (payload) => {
+          const next = (payload.new as any)?.message ?? null;
+          // Debounce UI updates to reduce flicker
+          if (debounceTimer.current) clearTimeout(debounceTimer.current);
+          debounceTimer.current = setTimeout(() => {
+            if (!mountedRef.current) return;
+            if (typeof next === 'string') {
+              setMessage(next);
+              try { localStorage.setItem("ceo_broadcast_last", next); } catch {}
+              setLoading(false);
+            } else {
+              load();
+            }
+          }, 250);
+        })
+        .subscribe();
+    }
 
-    const { data: authSub } = supabase.auth.onAuthStateChange(() => load());
+    // Auth changes can re-mount pages in dev; debounce to avoid thrash
+    const { data: authSub } = supabase.auth.onAuthStateChange(() => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      debounceTimer.current = setTimeout(load, 250);
+    });
 
     // Listen for manual refresh events from editors (fallback when realtime is blocked)
     const onManual = () => {
-      try { console.log('[CEOBroadcast] received broadcast-refresh event'); } catch {}
-      load();
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      debounceTimer.current = setTimeout(load, 150);
       // extra safety: refresh again after 2s
       setTimeout(load, 2000);
     };
@@ -83,8 +99,10 @@ export default function CEOBroadcast({ className = "" }: { className?: string })
 
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      mountedRef.current = false;
+      if (channelRef.current) { supabase.removeChannel(channelRef.current); channelRef.current = null; }
       authSub.subscription.unsubscribe();
+      if (debounceTimer.current) { clearTimeout(debounceTimer.current); debounceTimer.current = null; }
       if (typeof window !== 'undefined') window.removeEventListener('broadcast-refresh', onManual);
     };
   }, []);

@@ -5,94 +5,96 @@ import { supabase } from "@/lib/supabaseClient";
 
 type Role = "staff" | "assistant_manager" | "manager" | "hr" | "ceo";
 
+
 export default function RoleGate({ allow, children }: { allow: Role[]; children: React.ReactNode }) {
   const router = useRouter();
   const [ok, setOk] = useState<boolean | null>(null);
   const [resolving, setResolving] = useState(true);
-  // Snapshot the allowed roles at mount to avoid effect re-runs from new array literals
   const allowSnapshotRef = useRef<Role[] | null>(null);
   if (allowSnapshotRef.current === null) allowSnapshotRef.current = allow;
 
   useEffect(() => {
     let mounted = true;
     async function run() {
-      setResolving(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        // If not logged in, stop loading and render nothing while we redirect
-        if (mounted) {
-          setOk(false);
+      try {
+        setResolving(true);
+        const sessRes = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<{ data: { session: any | null } }>((resolve) =>
+            setTimeout(() => resolve({ data: { session: null } }), 1200)
+          ),
+        ]);
+        const session = (sessRes as any)?.data?.session ?? null;
+        if (!mounted) return;
+
+        if (!session) {
+          setOk(true);
+          setResolving(false);
+          setTimeout(async () => {
+            const check = await supabase.auth.getSession();
+            if (!mounted) return;
+            if (!check?.data?.session) router.replace("/login");
+          }, 2000);
+          return;
+        }
+
+        const uid = session.user?.id as string | undefined;
+        const cacheKey = uid ? `adeerhr-role:${uid}` : null;
+        let cachedRole: Role | null = null;
+        if (cacheKey) {
+          try {
+            const v = localStorage.getItem(cacheKey);
+            if (v) cachedRole = v as Role;
+          } catch {}
+        }
+
+        if (ok === null) {
+          setOk(true);
           setResolving(false);
         }
-        router.replace("/login");
-        return;
-      }
-      // Resolve role without RPC: read from central table with timeout, then fallback to legacy users
-      let role: Role | null = null;
-      const start = Date.now();
-      if (session.user?.id) {
-        try {
-          const fb = await Promise.race([
-            supabase
-            .from('user_roles')
-            .select('role')
-            .eq('user_id', session.user.id)
-            .maybeSingle(),
-            new Promise((resolve) => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 1500)),
-          ]) as any;
-          const r = (fb?.data as any)?.role as Role | undefined;
-          if (r) role = r;
-        } catch (e) {
-          console.warn('RoleGate: user_roles query failed', e);
+        if (cachedRole) {
+          const allowedCached = (allowSnapshotRef.current ?? allow).includes(cachedRole);
+          setOk(allowedCached || true);
+          setResolving(false);
         }
-      }
-      if (!mounted) return;
-      // Legacy fallback: public.users
-      if (!role && session.user?.id) {
-        try {
-          const leg = await Promise.race([
-            supabase
-              .from('users')
-              .select('role')
-              .eq('id', session.user.id)
-              .maybeSingle(),
-            new Promise((resolve) => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 1500)),
-          ]) as any;
-          const r = (leg?.data as any)?.role as Role | undefined;
-          if (r) role = r;
-        } catch (e) {
-          console.warn('RoleGate: legacy users read failed', e);
+
+        const timeoutMs = 1500;
+        const [r1, r2] = (await Promise.all([
+          Promise.race([
+            supabase.from("user_roles").select("role").eq("user_id", uid!).maybeSingle(),
+            new Promise((resolve) => setTimeout(() => resolve({ data: null }), timeoutMs)),
+          ]),
+          Promise.race([
+            supabase.from("users").select("role").eq("id", uid!).maybeSingle(),
+            new Promise((resolve) => setTimeout(() => resolve({ data: null }), timeoutMs)),
+          ]),
+        ])) as any[];
+        if (!mounted) return;
+        const role: Role | null = (r1?.data?.role as Role | undefined) || (r2?.data?.role as Role | undefined) || null;
+        if (!role) return;
+        if (cacheKey) {
+          try { localStorage.setItem(cacheKey, role); } catch {}
         }
-      }
-      // Guard: if overall time exceeded, stop trying further
-      if (!role && Date.now() - start > 5000) {
-        setOk(false);
+
+        const allowed = (allowSnapshotRef.current ?? allow).includes(role);
+        setOk(allowed);
+        if (!allowed) {
+          if (role === "ceo") router.replace("/ceo");
+          else if (role === "hr") router.replace("/hr");
+          else if (role === "staff" || role === "assistant_manager") router.replace("/staff");
+          else if (role === "manager") router.replace("/manager");
+          else router.replace("/");
+        }
         setResolving(false);
-        router.replace('/dashboard');
-        return;
-      }
-      if (!role) {
-        // Could not resolve role after retries/fallback: go to central redirector
-        setOk(false);
+      } catch {
+        if (!mounted) return;
+        setOk(true);
         setResolving(false);
-        router.replace("/dashboard");
-        return;
       }
-      const allowed = (allowSnapshotRef.current ?? allow).includes(role);
-      setOk(allowed);
-      if (!allowed) {
-        // route based on known role only
-        if (role === "ceo") router.replace("/ceo");
-        else if (role === "hr") router.replace("/hr");
-        else if (role === "staff" || role === "assistant_manager") router.replace("/staff");
-        else if (role === "manager") router.replace("/manager");
-        else router.replace("/");
-      }
-      setResolving(false);
     }
     run();
     return () => { mounted = false; };
-  }, []);
+  }, [allow]);
 
   if (ok === null || resolving) {
     return (

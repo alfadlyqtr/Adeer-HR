@@ -17,6 +17,9 @@ export type StaffSummary = {
   warnings_count?: number | null;
   onClock?: boolean | null;
   last_ts?: string | null;
+  // optional break status (today)
+  onBreakType?: string | null;
+  onBreakStart?: string | null;
 };
 
 export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; onShowMore: (id: string) => void; }) {
@@ -28,13 +31,13 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
     setImgError(false);
   }, [staff.avatar_url]);
 
-  // tick every second only when on clock to update live timer
+  // tick every second when on clock or on break to update live timers
   useEffect(() => {
-    const anchor = staff.today_check_in || staff.last_ts;
-    if (!staff.onClock || !anchor) return;
+    const anchor = staff.today_check_in || staff.last_ts || staff.onBreakStart;
+    if (!(staff.onClock || staff.onBreakStart) || !anchor) return;
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [staff.onClock, staff.today_check_in, staff.last_ts]);
+  }, [staff.onClock, staff.today_check_in, staff.last_ts, staff.onBreakStart]);
 
   function fmtDuration(fromIso: string) {
     const start = Date.parse(fromIso);
@@ -46,6 +49,24 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
     const ss = Math.floor(s % 60).toString().padStart(2, '0');
     return `${hh}:${mm}:${ss}`;
   }
+
+  function fmtHours(ms: number) {
+    const h = Math.max(0, ms) / 3600000;
+    return `${h.toFixed(2)} h`;
+  }
+
+  // Lightweight "today hours" estimation using today's check-in/out only (breaks shown in modal)
+  const todayHours = (() => {
+    const inIso = staff.today_check_in || staff.last_ts || null;
+    const outIso = staff.today_check_out || null;
+    if (!inIso) return null;
+    const inMs = Date.parse(inIso);
+    if (isNaN(inMs)) return null;
+    const endMs = outIso ? Date.parse(outIso) : nowMs;
+    if (isNaN(endMs)) return null;
+    if (endMs <= inMs) return '0.00 h';
+    return fmtHours(endMs - inMs);
+  })();
 
   const handleFlip = () => setFlipped(v => !v);
 
@@ -77,7 +98,12 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
                 onError={() => setImgError(true)}
               />
             </div>
-            {/* Decorative elements could be added here (icons/shapes) */}
+            {/* On Break badge */}
+            {staff.onBreakStart && (
+              <div className="absolute right-3 top-3 rounded-full border border-amber-300/40 bg-amber-500/90 px-2 py-0.5 text-[10px] font-semibold text-black shadow-sm">
+                On Break{staff.onBreakType ? `: ${staff.onBreakType}` : ''}
+              </div>
+            )}
           </div>
 
           {/* Name + role pill */}
@@ -86,6 +112,12 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
             <div className="mt-1 flex items-center justify-center gap-2 text-xs">
               <span className="rounded bg-[#2c7db6] px-2 py-0.5 text-white uppercase">{(staff.role || staff.title || "Staff").toString()}</span>
               {staff.team && <span className="rounded border px-2 py-0.5 text-[11px] opacity-80">{staff.team}</span>}
+              {staff.onBreakStart && (
+                <span className="inline-flex items-center gap-1 rounded border border-amber-300/60 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-600"></span>
+                  Break
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -102,6 +134,13 @@ export default function StaffCard({ staff, onShowMore }: { staff: StaffSummary; 
             <div className="flex items-center justify-between"><span className="opacity-70">Status</span><span className="font-medium">{(staff.status ?? "—").toString()}</span></div>
             <div className="flex items-center justify-between"><span className="opacity-70">Today In</span><span className="font-medium">{(staff.today_check_in || (staff.onClock && staff.last_ts) ? new Date((staff.today_check_in || staff.last_ts) as string).toLocaleTimeString() : "—")}</span></div>
             <div className="flex items-center justify-between"><span className="opacity-70">Today Out</span><span className="font-medium">{staff.today_check_out ? new Date(staff.today_check_out).toLocaleTimeString() : "—"}</span></div>
+            {staff.onBreakStart && (
+              <div className="flex items-center justify-between text-[13px]">
+                <span className="opacity-70">On Break{staff.onBreakType ? `: ${staff.onBreakType}` : ''}</span>
+                <span className="font-semibold text-amber-600 tabular-nums">{fmtDuration(staff.onBreakStart)}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between"><span className="opacity-70">Today Hours</span><span className="font-medium">{todayHours ?? '—'}</span></div>
             <div className="flex items-center justify-between"><span className="opacity-70">Warnings</span><span className="font-medium">{staff.warnings_count ?? 0}</span></div>
             {staff.onClock && (staff.today_check_in || staff.last_ts) && (
               <div className="flex items-center justify-between text-[13px]">

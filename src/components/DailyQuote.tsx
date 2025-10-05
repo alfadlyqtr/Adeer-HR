@@ -1,6 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import QuotesRotator from "./QuotesRotator";
+
+// Module-scoped singleton cache to prevent thrash in StrictMode and across re-mounts
+let QUOTES_CACHE: { quotes: string[]; ts: number } | null = null;
+let QUOTES_INFLIGHT: Promise<string[] | null> | null = null;
+const QUOTES_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 /**
  * Daily Quote component - loads quotes from server and displays rotating quotes
@@ -8,22 +13,57 @@ import QuotesRotator from "./QuotesRotator";
 export default function DailyQuote() {
   const [quotes, setQuotes] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const mountedRef = useRef(false);
 
   useEffect(() => {
+    mountedRef.current = true;
     async function loadQuotes() {
       try {
-        const res = await fetch('/api/quotes');
-        if (res.ok) {
-          const data = await res.json();
-          setQuotes(data.quotes || []);
+        // 1) Try localStorage cache
+        try {
+          const k = localStorage.getItem('daily_quotes_cache');
+          if (k) {
+            const parsed = JSON.parse(k) as { quotes: string[]; ts: number };
+            if (parsed?.quotes?.length && Date.now() - parsed.ts < QUOTES_TTL_MS) {
+              setQuotes(parsed.quotes);
+              setLoading(false);
+              // do not return; continue to also hydrate module cache
+              QUOTES_CACHE = parsed;
+            }
+          }
+        } catch {}
+
+        // 2) Use module cache if fresh
+        if (QUOTES_CACHE && Date.now() - QUOTES_CACHE.ts < QUOTES_TTL_MS) {
+          setQuotes((prev) => prev.length ? prev : QUOTES_CACHE!.quotes);
+          setLoading(false);
+          return;
         }
+
+        // 3) Coalesce network fetches
+        if (!QUOTES_INFLIGHT) {
+          QUOTES_INFLIGHT = fetch('/api/quotes')
+            .then((res) => (res.ok ? res.json() : { quotes: [] }))
+            .then((data) => Array.isArray(data.quotes) ? data.quotes as string[] : [])
+            .catch(() => [])
+            .finally(() => { setTimeout(() => { QUOTES_INFLIGHT = null; }, 0); }) as Promise<string[] | null>;
+        }
+        const got = await QUOTES_INFLIGHT;
+        if (!mountedRef.current) return;
+        const arr = got || [];
+        if (arr.length) {
+          QUOTES_CACHE = { quotes: arr, ts: Date.now() };
+          try { localStorage.setItem('daily_quotes_cache', JSON.stringify(QUOTES_CACHE)); } catch {}
+        }
+        setQuotes(arr);
       } catch (e) {
         console.warn("Failed to load quotes", e);
       } finally {
-        setLoading(false);
+        if (mountedRef.current) setLoading(false);
       }
     }
     loadQuotes();
+    return () => { mountedRef.current = false; };
   }, []);
 
   if (loading) {

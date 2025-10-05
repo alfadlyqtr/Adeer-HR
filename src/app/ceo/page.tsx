@@ -447,6 +447,19 @@ export default function CEODashboardPage() {
           if (!todayMap[uid].out || ts > (todayMap[uid].out as string)) todayMap[uid].out = ts;
         }
       }
+      // Build on-break map from today's logs
+      const breakNow: Record<string, { type: string | null; start: string }> = {};
+      for (const log of todayLogs as any[]) {
+        const uid = log.user_id; if (!uid) continue;
+        const t = String(log.type || '');
+        if (t.startsWith('break_start')) {
+          const parsed = t.startsWith('break_start:') ? t.split(':')[1] : null;
+          breakNow[uid] = { type: parsed, start: log.ts };
+        } else if (t.startsWith('break_end')) {
+          delete breakNow[uid];
+        }
+      }
+
       const merged = users.map((u: any) => {
         const st = statusMap[u.id] || {};
         const s = (st.status ?? st.last_event ?? "")?.toString().toLowerCase();
@@ -457,6 +470,7 @@ export default function CEODashboardPage() {
         if (onClock && !todayIn && st.last_ts) {
           todayIn = st.last_ts;
         }
+        const ob = breakNow[u.id];
         return {
           user_id: u.id,
           name: u.full_name || u.email || u.id,
@@ -472,6 +486,8 @@ export default function CEODashboardPage() {
           avatar_url: cardMap[u.id]?.avatar_url || null,
           today_check_in: todayIn,
           today_check_out: today.out || null,
+          onBreakType: ob?.type ?? null,
+          onBreakStart: ob?.start ?? null,
         };
       });
       setStaffCards(merged);

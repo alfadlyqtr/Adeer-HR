@@ -87,7 +87,9 @@ export default function StaffDetailsModal({
   // Load warnings list for this staff
   useEffect(() => {
     if (!open || !staff) return;
+    let active = true;
     (async () => {
+      if (!active) return;
       setWarnsLoading(true);
       setWarnsError(null);
       try {
@@ -101,15 +103,19 @@ export default function StaffDetailsModal({
               .limit(10)
           ) as unknown as Promise<{ data: any[]|null; error: any }>
         );
+        if (!active) return;
         if (error) throw error;
         setWarns(Array.isArray(data) ? data : []);
       } catch (err: any) {
+        if (!active) return;
         setWarns([]);
         setWarnsError(err?.message || 'Failed to load warnings');
       } finally {
+        if (!active) return;
         setWarnsLoading(false);
       }
     })();
+    return () => { active = false; };
   }, [open, staff]);
 
   async function submitWarning() {
@@ -157,7 +163,9 @@ export default function StaffDetailsModal({
   // Load attendance history when range changes
   useEffect(() => {
     if (!open || !staff) return;
+    let active = true;
     (async () => {
+      if (!active) return;
       setAttLoading(true);
       setAttError(null);
       try {
@@ -169,42 +177,34 @@ export default function StaffDetailsModal({
         const startIso = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0).toISOString();
         const endIso = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
 
-        // Query recent logs without complex OR filter (more robust across schemas/RLS), then filter in JS
         const { data, error } = await withTimeout(
           Promise.resolve(
             supabase
               .from('attendance_logs')
-              .select('ts,created_at,type')
+              .select('user_id, ts, created_at, type')
               .eq('user_id', staff.id)
-              .order('created_at', { ascending: true })
-              .limit(1000)
+              .gte('ts', startIso)
+              .lte('ts', endIso)
+              .order('ts', { ascending: true })
+              .limit(500)
           ) as unknown as Promise<{ data: any[]|null; error: any }>
         );
+        if (!active) return;
         if (error) throw error;
-
-        // Keep only rows within selected range
-        const filtered = (data ?? []).filter((row: any) => {
-          const ts: string = (row.ts || row.created_at) as string;
-          if (!ts) return false;
-          const t = Date.parse(ts);
-          return t >= Date.parse(startIso) && t <= Date.parse(endIso);
-        });
 
         // Group by day and compute first IN, last OUT, total work hours, and breaks
         type DayAgg = { in?: string|null; out?: string|null; durationMs: number; breaksMs: number };
         const byDay: Record<string, DayAgg> = {};
-        const events: Array<{ ts: string; type: string; dayKey: string }> = filtered.map((row: any) => {
+        const events: Array<{ ts: string; type: string; dayKey: string }> = (data ?? []).map((row: any) => {
           const t = String(row.type || '').toLowerCase();
           const ts: string = (row.ts || row.created_at) as string;
           const d = new Date(ts);
           const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
           return { ts, type: t, dayKey: key };
         });
-        // Process by day
         for (const e of events) {
           if (!byDay[e.dayKey]) byDay[e.dayKey] = { in: null, out: null, durationMs: 0, breaksMs: 0 };
         }
-        // For each day, scan in order and pair IN/OUT, also count breaks between OUT->next IN
         for (const dayKey of Object.keys(byDay)) {
           const dayEvents = events.filter(x => x.dayKey === dayKey).sort((a,b)=> a.ts < b.ts ? -1 : 1);
           let firstIn: string | null = null;
@@ -217,14 +217,10 @@ export default function StaffDetailsModal({
             if (e.type === 'check_in' || e.type === 'in' || e.type === 'checkin') {
               if (!firstIn || e.ts < firstIn) firstIn = e.ts;
               if (pendingOutForBreak) {
-                // OUT -> next IN gap counts as break
                 breakMs += Math.max(0, Date.parse(e.ts) - Date.parse(pendingOutForBreak));
                 pendingOutForBreak = null;
               }
-              if (!currentIn) currentIn = e.ts; else {
-                // multiple INs without OUT: reset anchor to latest IN
-                currentIn = e.ts;
-              }
+              if (!currentIn) currentIn = e.ts; else currentIn = e.ts;
             } else if (e.type === 'check_out' || e.type === 'out' || e.type === 'checkout') {
               if (e.ts > (lastOut || '')) lastOut = e.ts;
               if (currentIn) {
@@ -234,11 +230,10 @@ export default function StaffDetailsModal({
               pendingOutForBreak = e.ts;
             }
           }
-          // If today's record ends with an IN and no OUT, count up to now
           const isToday = (() => {
             const [y, m, d] = dayKey.split('-').map(Number);
-            const now = new Date();
-            return now.getFullYear() === y && (now.getMonth()+1) === m && now.getDate() === d;
+            const now2 = new Date();
+            return now2.getFullYear() === y && (now2.getMonth()+1) === m && now2.getDate() === d;
           })();
           if (isToday && currentIn) {
             workMs += Math.max(0, Date.now() - Date.parse(currentIn));
@@ -258,6 +253,7 @@ export default function StaffDetailsModal({
             durationMs: v.durationMs || 0,
             breaksMs: v.breaksMs || 0,
           }));
+        if (!active) return;
         setAttDays(days);
 
         const daysPresent = days.filter(d => d.in).length;
@@ -265,13 +261,16 @@ export default function StaffDetailsModal({
         const avgMs = daysPresent ? Math.round(totalMs / daysPresent) : 0;
         setAttSummary({ daysPresent, totalMs, avgMs });
       } catch (err: any) {
+        if (!active) return;
         setAttDays([]);
         setAttSummary({ daysPresent: 0, totalMs: 0, avgMs: 0 });
         setAttError(err?.message || 'Failed to load attendance');
       } finally {
+        if (!active) return;
         setAttLoading(false);
       }
     })();
+    return () => { active = false; };
   }, [open, staff, attRange]);
 
   // Load staff documents when modal opens

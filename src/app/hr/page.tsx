@@ -39,6 +39,25 @@ export default function HRDashboard() {
         for (const r of data as any[]) map[r.user_id] = r.role;
         setUserRolesMap(map);
       }
+
+  // Countdown component for breaks (no full-page rerenders)
+  function LiveCountdown({ start, minutes, onDone }: { start: string; minutes: number; onDone?: () => void }) {
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+      const id = setInterval(() => setTick((t) => t + 1), 1000);
+      return () => clearInterval(id);
+    }, []);
+    const endAt = new Date(start).getTime() + minutes * 60_000;
+    const remaining = Math.max(0, endAt - Date.now());
+    useEffect(() => {
+      if (remaining <= 0 && onDone) onDone();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tick]);
+    const s = Math.ceil(remaining / 1000);
+    const mm = Math.floor(s / 60).toString().padStart(2, '0');
+    const ss = Math.floor(s % 60).toString().padStart(2, '0');
+    return <>{mm}:{ss}</>;
+  }
     })();
   }, []);
 
@@ -98,11 +117,28 @@ export default function HRDashboard() {
   const [editingJobTitleName, setEditingJobTitleName] = useState<string>("");
   const [editingShiftId, setEditingShiftId] = useState<string | null>(null);
   const [editingShift, setEditingShift] = useState<{ name: string; duration_minutes: number; start_time?: string; end_time?: string }>({ name: "", duration_minutes: 480 });
-  const [nowMs, setNowMs] = useState<number>(Date.now());
   const [ceoMsgDraft, setCeoMsgDraft] = useState<string>("");
   // Analytics
   const [weeklyTrends, setWeeklyTrends] = useState<any[] | null>(null);
+  const [weeklyTrendsLoading, setWeeklyTrendsLoading] = useState(false);
   const [latenessHeatmap, setLatenessHeatmap] = useState<any[] | null>(null);
+  // Map of users currently on break today: user_id -> { type, start }
+  const [breakNowByUser, setBreakNowByUser] = useState<Record<string, { type: string | null; start: string }>>({});
+  // Breaks (self)
+  const [selfBreakRules, setSelfBreakRules] = useState<Array<{ name: string; minutes: number }>>([]);
+  const [selfSelectedBreak, setSelfSelectedBreak] = useState<string>("");
+  const [selfBreakActive, setSelfBreakActive] = useState(false);
+  const [selfBreakType, setSelfBreakType] = useState<string | null>(null);
+  const [selfBreakStartTs, setSelfBreakStartTs] = useState<string | null>(null);
+  const selfBreakEndingRef = useRef(false);
+  const [selfBreakMenuOpen, setSelfBreakMenuOpen] = useState(false);
+
+  // Utility: find rule minutes by name
+  const selfBreakMinutes = useMemo(() => {
+    if (!selfBreakType) return null;
+    const r = selfBreakRules.find(x => x.name === selfBreakType);
+    return r?.minutes ?? null;
+  }, [selfBreakRules, selfBreakType]);
 
   // Derive whether the current user is "on clock" (punched in)
   const isOnClock = useMemo(() => {
@@ -114,8 +150,10 @@ export default function HRDashboard() {
   }, [inout, sessionUserId]);
 
   useEffect(() => {
+    let active = true;
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
+      if (!active) return;
       setSessionUserId(session?.user?.id ?? null);
       // derive a friendly name for greeting
       try {
@@ -124,22 +162,33 @@ export default function HRDashboard() {
           setDisplayName(u?.full_name || session.user.user_metadata?.full_name || session.user.email || "");
         }
       } catch {}
-      // Initial load for the default tab and global data
-      await refreshOverview();
-      await loadBranding();
-      await loadWeeklyTrends();
+      // Initial load for the default tab and global data (parallelize to reduce TTFB)
+      await Promise.all([
+        refreshOverview(),
+        loadBranding(),
+        loadWeeklyTrends(),
+        loadBreakRules(),
+      ]);
     })();
+    return () => { active = false; };
   }, []);
 
-  // Realtime: refresh overview when attendance_logs change
+  // Realtime: refresh overview when attendance_logs change (debounced)
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const channel = supabase
       .channel('realtime-attendance')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_logs' }, () => {
-        refreshOverview();
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          refreshOverview();
+        }, 1000);
       })
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   // Realtime: refresh settings lists when any settings table changes
@@ -204,11 +253,16 @@ export default function HRDashboard() {
     }
   }, [role]);
 
-  // Tick every second for live timers in status list
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
+  // Lightweight live duration component to avoid re-rendering the whole page each second
+  function LiveDuration({ start }: { start: string }) {
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+      const id = setInterval(() => setTick((t) => t + 1), 1000);
+      return () => clearInterval(id);
+    }, []);
+    const ms = Math.max(0, Date.now() - new Date(start).getTime());
+    return <>{fmtDuration(ms)}</>;
+  }
 
   function fmtDuration(ms: number) {
     if (ms < 0) ms = 0;
@@ -226,15 +280,138 @@ export default function HRDashboard() {
       .select("*")
       .order("user_id", { ascending: true });
     if (!error) setInout(data ?? []);
+
+    // Derive org-wide and self break state from today's logs (prefer DB, but honor optimistic local cache if DB has nothing yet)
+    try {
+      const startOfDayIso = new Date(new Date().setHours(0,0,0,0)).toISOString();
+      // Fetch all break events for today for everyone shown in Overview
+      const { data: todayAll } = await supabase
+        .from('attendance_logs')
+        .select('user_id,ts,type')
+        .gte('ts', startOfDayIso)
+        .order('ts', { ascending: true });
+
+      const map: Record<string, { type: string | null; start: string }> = {};
+      for (const r of (todayAll || []) as any[]) {
+        const t = String(r.type || '');
+        if (t.startsWith('break_start')) {
+          const parsed = t.startsWith('break_start:') ? t.split(':')[1] : null;
+          map[r.user_id] = { type: parsed, start: r.ts };
+        }
+        if (t.startsWith('break_end')) {
+          delete map[r.user_id];
+        }
+      }
+      // Derive self break from org map or optimistic cache; ensure map reflects self break so Overview shows the badge
+      if (sessionUserId) {
+        const selfNow = map[sessionUserId];
+        if (selfNow) {
+          setSelfBreakActive(true);
+          setSelfBreakType(selfNow.type);
+          setSelfBreakStartTs(selfNow.start);
+        } else {
+          try {
+            const raw = localStorage.getItem('self_break');
+            if (raw) {
+              const cached = JSON.parse(raw) as { type: string; start: string };
+              if (cached?.type && cached?.start) {
+                setSelfBreakActive(true);
+                setSelfBreakType(cached.type);
+                setSelfBreakStartTs(cached.start);
+                // Inject into map so the Current Status list shows on_break for self even if DB insert is pending
+                map[sessionUserId] = { type: cached.type, start: cached.start };
+              } else {
+                setSelfBreakActive(false);
+                setSelfBreakType(null);
+                setSelfBreakStartTs(null);
+              }
+            } else {
+              setSelfBreakActive(false);
+              setSelfBreakType(null);
+              setSelfBreakStartTs(null);
+            }
+          } catch {
+            setSelfBreakActive(false);
+            setSelfBreakType(null);
+            setSelfBreakStartTs(null);
+          }
+        }
+      }
+
+      setBreakNowByUser(map);
+    } catch {}
   }
 
   // --- Analytics loaders (graceful fallback if views missing) ---
   async function loadWeeklyTrends() {
+    setWeeklyTrendsLoading(true);
     try {
-      const { data, error } = await supabase.from("v_weekly_trends").select("*").limit(14);
-      if (!error) { setWeeklyTrends(data ?? []); return; }
-    } catch {}
-    setWeeklyTrends([]);
+      // Always compute from real attendance_logs for last 7 days
+      const now = new Date();
+      const end = new Date(now);
+      end.setHours(23,59,59,999);
+      const start = new Date(end);
+      start.setDate(start.getDate() - 6); // inclusive 7 days
+      start.setHours(0,0,0,0);
+
+      const [usersCountRes, logsRes] = await Promise.all([
+        supabase.from("users").select("*", { count: 'exact', head: true }),
+        supabase
+          .from("attendance_logs")
+          .select("user_id, ts, type")
+          .gte("ts", start.toISOString())
+          .lte("ts", end.toISOString())
+      ]);
+
+      if (logsRes.error) {
+        console.warn('[AttendanceTrends] attendance_logs query error:', logsRes.error);
+      }
+
+      const rows: any[] = Array.isArray(logsRes.data) ? logsRes.data : (logsRes.data ? [logsRes.data] : []);
+
+      if (!rows || rows.length === 0) {
+        console.warn('[AttendanceTrends] No attendance_logs found in the last 7 days. Bars may show low/zero.');
+      }
+
+      const totalUsers = (usersCountRes.count ?? 0);
+      const days: Array<{ date: Date; key: string; label: string }> = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        const key = d.toISOString().slice(0,10);
+        const label = d.toLocaleDateString(undefined, { weekday: 'short' });
+        days.push({ date: d, key, label });
+      }
+
+      const perDayMap: Record<string, Set<string>> = {};
+      for (const day of days) perDayMap[day.key] = new Set<string>();
+      // Try to adapt to schema variations
+      const tsCandidates = ['ts','timestamp','created_at','time'];
+      const typeCandidates = ['type','event','event_type','status'];
+      for (const row of rows ?? []) {
+        try {
+          const tsField = tsCandidates.find(k => k in (row as any));
+          const typeField = typeCandidates.find(k => k in (row as any));
+          if (!tsField || !typeField) continue;
+          const ts = new Date((row as any)[tsField]);
+          const key = ts.toISOString().slice(0,10);
+          if (!(key in perDayMap)) continue;
+          const type = String((row as any)[typeField] || '').toLowerCase();
+          if (type === 'check_in' || type === 'in' || type === 'present') {
+            perDayMap[key].add((row as any).user_id);
+          }
+        } catch {}
+      }
+
+      const computed = days.map(d => {
+        const present = perDayMap[d.key].size;
+        const pct = totalUsers > 0 ? Math.round((present / totalUsers) * 100) : 0;
+        return { label: d.label, date: d.key, attendance_pct: pct, present_count: present, total_users: totalUsers };
+      });
+      setWeeklyTrends(computed);
+    } finally {
+      setWeeklyTrendsLoading(false);
+    }
   }
 
   async function loadLatenessHeatmap() {
@@ -252,6 +429,12 @@ export default function HRDashboard() {
     try {
       setErr(null);
       setPunchLoading(true);
+      // If punching out while on break, end break first silently
+      if (type === 'check_out' && selfBreakActive) {
+        await supabase.from('attendance_logs').insert({ user_id: sessionUserId, type: 'break_end', ts: new Date().toISOString() });
+        setSelfBreakActive(false);
+        setSelfBreakType(null);
+      }
       const { error } = await supabase.from("attendance_logs").insert({
         user_id: sessionUserId,
         type,
@@ -266,6 +449,140 @@ export default function HRDashboard() {
       setPunchLoading(false);
     }
   }
+
+  async function loadBreakRules() {
+    try {
+      const { data } = await supabase.from('break_rules').select('name, minutes').order('name');
+      setSelfBreakRules((data as any[]) || []);
+      if ((data?.length||0) && !selfSelectedBreak) setSelfSelectedBreak((data as any[])[0].name);
+    } catch {}
+  }
+
+  // Fire-and-forget persistence helpers (no UX blocking)
+  async function persistBreakStart(picked: string, ts: string) {
+    const base:any = { user_id: sessionUserId, ts };
+    try {
+      const { error } = await supabase.from('attendance_logs').insert({ ...base, type: `break_start:${picked}` });
+      if (error) {
+        const retry = await supabase.from('attendance_logs').insert({ ...base, type: 'break_start', break_name: picked });
+        if (retry.error) throw retry.error;
+      }
+    } catch (e) {
+      // queue for retry
+      try {
+        const q = JSON.parse(localStorage.getItem('pending_break_events') || '[]');
+        q.push({ kind: 'start', type: picked, ts });
+        localStorage.setItem('pending_break_events', JSON.stringify(q));
+      } catch {}
+    }
+  }
+
+  async function persistBreakEnd(ts: string) {
+    const base:any = { user_id: sessionUserId, ts };
+    try {
+      const { error } = await supabase.from('attendance_logs').insert({ ...base, type: 'break_end' });
+      if (error) {
+        const retry = await supabase.from('attendance_logs').insert({ ...base, type: 'break_end:manual' });
+        if (retry.error) throw retry.error;
+      }
+    } catch (e) {
+      try {
+        const q = JSON.parse(localStorage.getItem('pending_break_events') || '[]');
+        q.push({ kind: 'end', ts });
+        localStorage.setItem('pending_break_events', JSON.stringify(q));
+      } catch {}
+    }
+  }
+
+  async function flushPendingBreakEvents() {
+    try {
+      const q = JSON.parse(localStorage.getItem('pending_break_events') || '[]') as any[];
+      if (!q.length) return;
+      const rest: any[] = [];
+      for (const ev of q) {
+        try {
+          if (ev.kind === 'start' && ev.type && ev.ts) {
+            await persistBreakStart(ev.type, ev.ts);
+          } else if (ev.kind === 'end' && ev.ts) {
+            await persistBreakEnd(ev.ts);
+          }
+        } catch {
+          rest.push(ev);
+        }
+      }
+      localStorage.setItem('pending_break_events', JSON.stringify(rest));
+    } catch {}
+  }
+
+  useEffect(() => {
+    const id = setInterval(() => { flushPendingBreakEvents(); }, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function startBreakSelf(ruleName?: string) {
+    const picked = ruleName || selfSelectedBreak;
+    if (!sessionUserId || !picked) return;
+    // Optimistic UI: immediate switch to break state
+    setErr(null); setSelfBreakMenuOpen(false);
+    const ts = new Date().toISOString();
+    setSelfBreakActive(true);
+    setSelfBreakType(picked);
+    setSelfBreakStartTs(ts);
+    // Immediately reflect in Overview list
+    setBreakNowByUser((prev) => ({ ...prev, [sessionUserId]: { type: picked, start: ts } }));
+    try { localStorage.setItem('self_break', JSON.stringify({ type: picked, start: ts })); } catch {}
+    // Fire-and-forget DB write (no await)
+    persistBreakStart(picked, ts);
+  }
+
+  async function endBreakSelf() {
+    if (!sessionUserId) return;
+    if (selfBreakEndingRef.current) return;
+    selfBreakEndingRef.current = true;
+    // Optimistic UI end immediately
+    setSelfBreakActive(false);
+    setSelfBreakType(null);
+    setSelfBreakStartTs(null);
+    // Remove from Overview list immediately
+    setBreakNowByUser((prev) => { const next = { ...prev }; delete next[sessionUserId]; return next; });
+    try { localStorage.removeItem('self_break'); } catch {}
+    const ts = new Date().toISOString();
+    // Fire-and-forget DB write (no await)
+    persistBreakEnd(ts).finally(() => { selfBreakEndingRef.current = false; });
+  }
+
+  // Auto end break when selected rule duration elapses
+  useEffect(() => {
+    if (!selfBreakActive || !selfBreakStartTs || !selfBreakType) return;
+    const rule = selfBreakRules.find(r => r.name === selfBreakType);
+    if (!rule) return;
+    const startMs = new Date(selfBreakStartTs).getTime();
+    const endAt = startMs + rule.minutes * 60_000;
+    const delay = Math.max(0, endAt - Date.now());
+    const id = setTimeout(() => {
+      // Safety: only auto end if still active for same type
+      if (selfBreakActive && selfBreakType === rule.name) {
+        endBreakSelf();
+      }
+    }, delay);
+    return () => clearTimeout(id);
+  }, [selfBreakActive, selfBreakStartTs, selfBreakType, selfBreakRules]);
+
+  // Restore optimistic break state on mount (in case DB insert was delayed)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('self_break');
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { type: string; start: string };
+      if (parsed?.type && parsed?.start && !selfBreakActive) {
+        setSelfBreakActive(true);
+        setSelfBreakType(parsed.type);
+        setSelfBreakStartTs(parsed.start);
+      }
+    } catch {}
+    // one-time run
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function refreshApprovals() {
     const [{ data: leaves }, { data: corr, error: corrErr }] = await Promise.all([
@@ -1044,14 +1361,14 @@ export default function HRDashboard() {
         {/* Daily Quote */}
         <DailyQuote />
 
-        {/* Quick Actions: Punch In/Out */}
-        <div className="flex items-center justify-end gap-3">
+        {/* Quick Actions: Punch In/Out + Breaks */}
+        <div className="flex flex-wrap items-center justify-end gap-3">
           <button
             onClick={() => logAttendance("check_in")}
             disabled={punchLoading}
             className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed 
               ${isOnClock
-                ? 'bg-emerald-600 text-white hover:bg-emerald-600 ring-2 ring-emerald-400 shadow-lg shadow-emerald-500/30 animate-pulse'
+                ? 'bg-emerald-600 text-white hover:bg-emerald-600 ring-2 ring-emerald-400 shadow-lg shadow-emerald-500/30'
                 : (goldMode && role === 'ceo'
                   ? 'bg-[#D4AF37] text-black hover:bg-[#c6a232]'
                   : 'bg-brand-primary text-white hover:bg-brand-primary/90')}
@@ -1062,7 +1379,7 @@ export default function HRDashboard() {
           {isOnClock && (
             <span className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-sm">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-30"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
               You’re punched in
@@ -1073,7 +1390,7 @@ export default function HRDashboard() {
             disabled={punchLoading}
             className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed 
               ${isOnClock
-                ? 'bg-rose-600 text-white hover:bg-rose-600 ring-2 ring-rose-400 shadow-lg shadow-rose-500/30 animate-pulse'
+                ? 'bg-rose-600 text-white hover:bg-rose-600 ring-2 ring-rose-400 shadow-lg shadow-rose-500/30'
                 : (goldMode && role === 'ceo'
                   ? 'bg-[#2b2b2b] text-white hover:bg-black/80'
                   : 'bg-gray-800 text-white hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600')}
@@ -1081,6 +1398,68 @@ export default function HRDashboard() {
           >
             Punch Out
           </button>
+
+          {/* Break controls (self) */}
+          {!selfBreakActive ? (
+            <div className="relative">
+              <button
+                onClick={() => setSelfBreakMenuOpen((v)=>!v)}
+                disabled={punchLoading}
+                className="rounded-md bg-amber-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                Take Break
+              </button>
+              {selfBreakMenuOpen && (
+                <div className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-md border bg-white shadow-lg dark:border-white/10 dark:bg-black">
+                  <div className="max-h-64 overflow-auto py-1">
+                    {selfBreakRules.length === 0 && (
+                      <div className="px-3 py-2 text-xs opacity-70">No break rules</div>
+                    )}
+                    {selfBreakRules.map((r)=> (
+                      <button
+                        key={r.name}
+                        className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-amber-50 dark:hover:bg-white/10"
+                        onClick={() => startBreakSelf(r.name)}
+                      >
+                        <span>{r.name}</span>
+                        <span className="text-xs opacity-70">{r.minutes}m</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <span className="rounded border px-2 py-1 text-xs flex items-center gap-2">
+                <span>On Break{selfBreakType ? `: ${selfBreakType}` : ''}</span>
+                {selfBreakStartTs && (
+                  <span className="inline-flex items-center gap-1 text-[11px] opacity-80">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
+                    <LiveDuration start={selfBreakStartTs} />
+                  </span>
+                )}
+                {(() => {
+                  if (!selfBreakType || !selfBreakStartTs) return null;
+                  const rule = selfBreakRules.find(r => r.name === selfBreakType);
+                  if (!rule) return null;
+                  const elapsed = Math.max(0, Date.now() - new Date(selfBreakStartTs).getTime());
+                  const limitMs = rule.minutes * 60_000;
+                  if (elapsed > limitMs) {
+                    return <span className="ml-1 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 border border-rose-200">Overdue</span>;
+                  }
+                  return null;
+                })()}
+              </span>
+              <button
+                onClick={endBreakSelf}
+                disabled={punchLoading}
+                className="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                Back from Break
+              </button>
+            </>
+          )}
         </div>
 
         {/* Tabs */}
@@ -1122,13 +1501,23 @@ export default function HRDashboard() {
                     const onClock = ["present", "working", "checked_in", "in"].includes(s) || (r.last_event === "check_in");
                     const nameColor = onClock ? "text-emerald-300 drop-shadow-[0_0_6px_rgba(16,185,129,0.45)]" : "text-rose-300 drop-shadow-[0_0_6px_rgba(244,63,94,0.45)]";
                     const statusColor = onClock ? "text-emerald-400" : "text-rose-400";
-                    const timerText = onClock && r.last_ts ? ` · ${fmtDuration(Math.max(0, nowMs - new Date(r.last_ts).getTime()))}` : "";
+                    const onBreak = breakNowByUser[r.user_id];
                     return (
                       <li key={r.user_id} className="flex items-center justify-between py-1">
                         <span className={nameColor}>{r.user_name ?? r.full_name ?? r.user_id}</span>
-                        <span className={`opacity-90 ${statusColor}`}>
-                          {(r.status ?? r.last_event ?? "—") + timerText}
-                        </span>
+                        {onBreak ? (
+                          <span className={`opacity-90 text-amber-600 flex items-center gap-1`}>
+                            on_break{onBreak.type ? `:${onBreak.type}` : ''}
+                            <span className="ml-1 text-xs opacity-80">· <LiveDuration start={onBreak.start} /></span>
+                          </span>
+                        ) : (
+                          <span className={`opacity-90 ${statusColor} flex items-center gap-1`}>
+                            {(r.status ?? r.last_event ?? "—")}
+                            {onClock && r.last_ts ? (
+                              <span className="ml-1 text-xs opacity-80">· <LiveDuration start={r.last_ts} /></span>
+                            ) : null}
+                          </span>
+                        )}
                       </li>
                     );
                   })}
@@ -1137,29 +1526,115 @@ export default function HRDashboard() {
             </div>
           </section>
 
-          {/* Weekly Trends (cards + simple bars) */}
+          {/* Attendance Trends (7-day, weekend emphasis) */}
           <section className={`rounded-xl border p-4 shadow-md transition-all duration-300 lg:col-span-1 ${goldMode && role === 'ceo' ? 'border-[#D4AF37]/30' : 'border-brand-primary/20'}`}>
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-lg font-medium">Weekly Trends</h2>
+              <h2 className="text-lg font-medium">Attendance Trends</h2>
               <button onClick={loadWeeklyTrends} className="text-xs text-brand-primary">Refresh</button>
             </div>
-            {!weeklyTrends || weeklyTrends.length === 0 ? (
+
+            {weeklyTrendsLoading ? (
+              <ul className="space-y-2 text-sm animate-pulse">
+                {Array.from({length:7}).map((_,i)=> (
+                  <li key={i} className="grid grid-cols-5 items-center gap-2">
+                    <span className="col-span-2 h-3 w-16 rounded bg-black/10 dark:bg-white/10" />
+                    <div className="col-span-3 h-2 rounded bg-black/10 dark:bg-white/10 overflow-hidden" />
+                  </li>
+                ))}
+              </ul>
+            ) : !weeklyTrends || weeklyTrends.length === 0 ? (
               <p className="text-sm opacity-70">No trend data.</p>
             ) : (
-              <ul className="space-y-2 text-sm">
-                {weeklyTrends.slice(0,6).map((r:any,i:number)=>{
-                  const pct = Math.max(0, Math.min(100, Math.round(Number(r.attendance_pct ?? r.pct ?? 0))));
-                  const label = r.label ?? r.day ?? r.week ?? `#${i+1}`;
+              <>
+                {(() => {
+                  const arr = weeklyTrends.slice(0,7);
+                  const values = arr.map((r:any) => Math.max(0, Math.min(100, Math.round(Number(r.attendance_pct ?? r.pct ?? 0)))));
+                  const labels = arr.map((r:any, i:number) => String(r.label ?? r.day ?? r.week ?? `#${i+1}`));
+                  const avg = values.length ? Math.round(values.reduce((a:number,b:number)=>a+b,0)/values.length) : 0;
+                  const presentAvg = avg;
+                  const absentAvg = Math.max(0, 100 - presentAvg);
+
+                  // Bar chart params
+                  const width = 320;
+                  const height = 92;
+                  const padding = 10;
+                  const barGap = 8;
+                  const barWidth = Math.max(8, Math.floor((width - padding*2 - barGap*(values.length-1)) / Math.max(1, values.length)));
+                  const weekendIdx = arr.map((r:any)=>{
+                    if (r.date) {
+                      const d = new Date(r.date);
+                      if (!isNaN(d as any)) { const wd = d.getUTCDay ? d.getUTCDay() : d.getDay(); return wd === 6 || wd === 0; }
+                    }
+                    const l = String(r.label ?? r.day ?? r.week ?? '');
+                    return /sat|sun/i.test(l);
+                  });
+
                   return (
-                    <li key={i} className="grid grid-cols-5 items-center gap-2">
-                      <span className="col-span-2 truncate">{label}</span>
-                      <div className="col-span-3 h-2 rounded bg-black/10 dark:bg-white/10 overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{width: pct + '%'}} />
+                    <div className="space-y-3">
+                      {/* Compact KPIs row */}
+                      <div className="grid grid-cols-3 gap-2 text-xs">
+                        <div className="rounded-md border p-2 text-center">
+                          <div className="opacity-70">Avg Present</div>
+                          <div className="text-base font-semibold">{presentAvg}%</div>
+                        </div>
+                        <div className="rounded-md border p-2 text-center">
+                          <div className="opacity-70">Absent (Avg)</div>
+                          <div className="text-base font-semibold">{absentAvg}%</div>
+                        </div>
+                        <div className="rounded-md border p-2 text-center">
+                          <div className="opacity-70">Days</div>
+                          <div className="text-base font-semibold">{values.length}</div>
+                        </div>
                       </div>
-                    </li>
+
+                      {/* Simple Bar Chart (SVG) */}
+                      <div className="rounded-md border p-3">
+                        <div className="mb-2 text-xs opacity-70">Last 7 days</div>
+                        <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance last 7 days bar chart">
+                          {/* Axis baseline */}
+                          <line x1={padding} y1={height-20} x2={width-padding} y2={height-20} stroke="currentColor" opacity="0.15" />
+                          {/* Bars */}
+                          {values.map((v:number,i:number)=>{
+                            const x = padding + i*(barWidth+barGap);
+                            const h = Math.round(((height-30) * v) / 100);
+                            const y = (height-20) - h;
+                            const color = v >= 95 ? '#10b981' : v >= 85 ? '#f59e0b' : '#ef4444';
+                            return (
+                              <g key={i}>
+                                {weekendIdx[i] && (
+                                  <rect x={x-2} y={10} width={barWidth+4} height={height-30} fill="#f59e0b" opacity="0.08" rx="3" />
+                                )}
+                                <rect x={x} y={y} width={barWidth} height={h} fill={color} rx="2" />
+                                <text x={x + barWidth/2} y={height-6} textAnchor="middle" fontSize="9" opacity="0.7">{labels[i]}</text>
+                              </g>
+                            );
+                          })}
+                        </svg>
+                      </div>
+
+                      {/* Simple Pie (SVG) */}
+                      <div className="rounded-md border p-3">
+                        <div className="mb-2 text-xs opacity-70">Average distribution</div>
+                        {(() => {
+                          const size = 120; const r = 50; const cx = 60; const cy = 60; const circ = 2 * Math.PI * r;
+                          const presentLen = (presentAvg/100) * circ; const absentLen = circ - presentLen;
+                          return (
+                            <svg width={size} height={size} role="img" aria-label="Average present vs absent pie">
+                              <circle cx={cx} cy={cy} r={r} fill="none" stroke="#ef4444" strokeWidth={16} strokeDasharray={`${absentLen} ${circ}`} transform={`rotate(-90 ${cx} ${cy})`} />
+                              <circle cx={cx} cy={cy} r={r} fill="none" stroke="#10b981" strokeWidth={16} strokeDasharray={`${presentLen} ${circ}`} transform={`rotate(${(absentLen/circ)*360 - 90} ${cx} ${cy})`} />
+                              <text x={cx} y={cy+4} textAnchor="middle" fontSize="16" fontWeight={600}>{presentAvg}%</text>
+                            </svg>
+                          );
+                        })()}
+                        <div className="mt-2 flex items-center justify-center gap-4 text-xs">
+                          <span className="inline-flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{background:'#10b981'}} /> Present</span>
+                          <span className="inline-flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{background:'#ef4444'}} /> Absent</span>
+                        </div>
+                      </div>
+                    </div>
                   );
-                })}
-              </ul>
+                })()}
+              </>
             )}
           </section>
         </div>

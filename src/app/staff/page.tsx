@@ -27,6 +27,9 @@ export default function StaffDashboard() {
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [punchLoading, setPunchLoading] = useState(false);
   const [breakActive, setBreakActive] = useState(false);
+  const [breakRules, setBreakRules] = useState<Array<{ name: string; minutes: number }>>([]);
+  const [selectedBreak, setSelectedBreak] = useState<string>("");
+  const [currentBreakType, setCurrentBreakType] = useState<string | null>(null);
   const [leaveForm, setLeaveForm] = useState({ type: "annual", start_date: "", end_date: "" });
   const [leaveSubmitting, setLeaveSubmitting] = useState(false);
   const [timeline, setTimeline] = useState<any[]>([]);
@@ -49,10 +52,19 @@ export default function StaffDashboard() {
         refreshTimeline(session.user.id),
         refreshSummary(session.user.id),
         refreshFiles(session.user.id),
+        loadBreakRules(),
       ]);
     })();
     return () => { active = false; };
   }, []);
+
+  async function loadBreakRules() {
+    try {
+      const { data } = await supabase.from('break_rules').select('name, minutes').order('name');
+      setBreakRules((data as any[]) || []);
+      if ((data?.length || 0) && !selectedBreak) setSelectedBreak(data![0].name);
+    } catch {}
+  }
 
   // Tick every second for live timers
   useEffect(() => {
@@ -103,6 +115,46 @@ export default function StaffDashboard() {
     } finally {
       setPunchLoading(false);
     }
+  }
+
+  async function startBreak() {
+    if (!sessionUserId || !selectedBreak) return;
+    try {
+      setErr(null); setPunchLoading(true);
+      const base: any = { user_id: sessionUserId, type: 'break_start', ts: new Date().toISOString() };
+      // Try include break_name; if column missing, retry encoding in type
+      let { error } = await supabase.from('attendance_logs').insert({ ...base, break_name: selectedBreak });
+      if (error) {
+        const msg = String(error.message || '');
+        if (/column .*break_name/i.test(msg)) {
+          const retry = await supabase.from('attendance_logs').insert({ ...base, type: `break_start:${selectedBreak}` });
+          if (retry.error) throw retry.error;
+        } else {
+          throw error;
+        }
+      }
+      setBreakActive(true);
+      setCurrentBreakType(selectedBreak);
+      await refreshTimeline(sessionUserId);
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to start break');
+    } finally {
+      setPunchLoading(false);
+    }
+  }
+
+  async function endBreak() {
+    if (!sessionUserId) return;
+    try {
+      setErr(null); setPunchLoading(true);
+      const base: any = { user_id: sessionUserId, type: 'break_end', ts: new Date().toISOString() };
+      let { error } = await supabase.from('attendance_logs').insert(base);
+      if (error) throw error;
+      setBreakActive(false);
+      await refreshTimeline(sessionUserId);
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to end break');
+    } finally { setPunchLoading(false); }
   }
 
   function queueOffline(record: any) {
@@ -175,15 +227,18 @@ export default function StaffDashboard() {
   async function refreshTimeline(userId: string) {
     const { data, error } = await supabase
       .from("attendance_logs")
-      .select("ts,type")
+      .select("ts,type,break_name")
       .eq("user_id", userId)
       .gte("ts", startOfTodayLocalISO())
       .order("ts", { ascending: true });
     if (error) { setErr(error.message); return; }
     setTimeline(data ?? []);
     // Derive break active state from latest break event today
-    const lastBreak = (data ?? []).filter((r: any) => r.type === "break_start" || r.type === "break_end").at(-1);
-    setBreakActive(lastBreak?.type === "break_start");
+    const lastBreak = (data ?? []).filter((r: any) => String(r.type||'').startsWith("break_")).at(-1);
+    const lbType = String(lastBreak?.type || '');
+    const parsed = lbType.startsWith('break_start:') ? lbType.split(':')[1] : (lastBreak?.break_name || null);
+    setBreakActive(lbType.startsWith("break_start"));
+    setCurrentBreakType(lbType.startsWith("break_start") ? (parsed || currentBreakType) : null);
   }
 
   async function refreshSummary(userId: string) {
@@ -225,7 +280,8 @@ export default function StaffDashboard() {
 
     if (breakActive && lastBreakStart) {
       const since = new Date(lastBreakStart.ts).getTime();
-      return `On break for ${fmtDuration(nowMs - since)}`;
+      const name = currentBreakType ? ` (${currentBreakType})` : '';
+      return `On break${name} for ${fmtDuration(nowMs - since)}`;
     }
 
     if (lastCheckIn && (!lastCheckOut || new Date(lastCheckIn.ts) > new Date(lastCheckOut.ts))) {
@@ -253,37 +309,31 @@ export default function StaffDashboard() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <section className="rounded-lg border p-4">
             <h2 className="mb-2 text-lg font-medium">Punch</h2>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button disabled={punchLoading} onClick={() => logAttendance("check_in")} className="rounded-md bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-60">Punch In</button>
               <button disabled={punchLoading} onClick={() => logAttendance("check_out")} className="rounded-md bg-rose-600 px-3 py-1.5 text-white disabled:opacity-60">Punch Out</button>
+              {!breakActive ? (
+                <>
+                  <select value={selectedBreak} onChange={(e)=> setSelectedBreak(e.target.value)} className="rounded-md border px-2 py-1 text-sm">
+                    {breakRules.map((r)=> (<option key={r.name} value={r.name}>{r.name} ({r.minutes}m)</option>))}
+                  </select>
+                  <button disabled={punchLoading || !selectedBreak} onClick={startBreak} className="rounded-md bg-amber-500 px-3 py-1.5 text-white disabled:opacity-60">Take Break</button>
+                </>
+              ) : (
+                <>
+                  <span className="rounded border px-2 py-0.5 text-xs">On Break{currentBreakType ? `: ${currentBreakType}` : ''}</span>
+                  <button disabled={punchLoading} onClick={endBreak} className="rounded-md bg-amber-700 px-3 py-1.5 text-white disabled:opacity-60">Back from Break</button>
+                </>
+              )}
             </div>
-            <p className="mt-2 text-xs text-gray-500">Writes to table `attendance_logs` with types `check_in`/`check_out`.</p>
+            <p className="mt-2 text-xs text-gray-500">Records `check_in`/`check_out` and `break_start`/`break_end` in `attendance_logs`.</p>
             {liveLabel && <p className="mt-1 text-sm font-medium text-brand-primary">{liveLabel}</p>}
             {confirmMsg && (
               <p className="mt-2 text-sm text-emerald-600">{confirmMsg}</p>
             )}
           </section>
 
-          <section className="rounded-lg border p-4">
-            <h2 className="mb-2 text-lg font-medium">Breaks</h2>
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                disabled={punchLoading || breakActive}
-                onClick={() => logAttendance("break_start")}
-                className="rounded-md bg-amber-500 px-3 py-1.5 text-white disabled:opacity-60"
-              >
-                Start Break
-              </button>
-              <button
-                disabled={punchLoading || !breakActive}
-                onClick={() => logAttendance("break_end")}
-                className="rounded-md bg-amber-700 px-3 py-1.5 text-white disabled:opacity-60"
-              >
-                End Break
-              </button>
-              <span className="text-xs text-gray-600 dark:text-gray-300">Status: {breakActive ? "On break" : "Working"}</span>
-            </div>
-          </section>
+          {/* Breaks section is now integrated into Punch controls */}
 
           <section className="rounded-lg border p-4">
             <h2 className="mb-2 text-lg font-medium">Leave</h2>
